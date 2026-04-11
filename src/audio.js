@@ -52,6 +52,32 @@ export async function base64ToBuffer(b64, ctx) {
   return await ctx.decodeAudioData(bytes.buffer)
 }
 
+export function makeReverbIR(ctx, duration = 1.8, decay = 3) {
+  const sr = ctx.sampleRate
+  const len = Math.max(1, Math.floor(sr * duration))
+  const buf = ctx.createBuffer(2, len, sr)
+  for (let c = 0; c < 2; c++) {
+    const d = buf.getChannelData(c)
+    for (let i = 0; i < len; i++) {
+      const t = i / len
+      const env = Math.pow(1 - t, decay)
+      d[i] = ((Math.random() * 2 - 1) + Math.sin(i * 0.07 + c * 1.3) * 0.25) * env
+    }
+  }
+  return buf
+}
+
+export function makeSaturationCurve(amount) {
+  const n = 2048
+  const curve = new Float32Array(n)
+  const k = Math.max(0, amount) * 80
+  for (let i = 0; i < n; i++) {
+    const x = (i / n) * 2 - 1
+    curve[i] = k > 0 ? (1 + k) * x / (1 + k * Math.abs(x)) : x
+  }
+  return curve
+}
+
 export function reverseBuffer(buffer, ctx) {
   const out = ctx.createBuffer(buffer.numberOfChannels, buffer.length, buffer.sampleRate)
   for (let c = 0; c < buffer.numberOfChannels; c++) {

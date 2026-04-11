@@ -65,7 +65,7 @@ export function TimelineTab() {
   }
   const renderToPool = async () => {
     const buf = await renderArrangement(tracks, getBuffer, duration)
-    addPoolItem('timeline_mix', buf, 'object')
+    addPoolItem('timeline_mix', buf, 'timeline')
   }
 
   const pxPerSec = 30

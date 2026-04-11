@@ -10,21 +10,45 @@ const defaultVoice = () => ({
   loadedPoolId: '',
   tempo: 1,
   pitch: 0,
-  filterHz: 6000,
-  delayTime: 0.25,
-  delayFb: 0.45,
-  wet: 0.5,
   voiceGain: 1,
   reversed: false,
   loopStart: 0,
   loopEnd: 1,
   view: 'disk',
+  // filter
+  filterType: 'lowpass',
+  filterHz: 18000,
+  filterQ: 0.7,
+  // saturation
+  saturation: 0,
+  // wow/flutter
+  wowRate: 0,
+  wowDepth: 0,
+  // ring mod
+  ringFreq: 100,
+  ringAmount: 0,
+  // flanger
+  flangerRate: 0.3,
+  flangerDepth: 0.4,
+  flangerFb: 0.3,
+  flangerMix: 0,
+  // tremolo
+  tremRate: 4,
+  tremDepth: 0,
+  // tape delay
+  delayTime: 0.25,
+  delayFb: 0.35,
+  wet: 0,
+  // reverb
+  reverbSize: 1.5,
+  reverbWet: 0,
 })
 export const MAX_VOICES = 6
 const defaultSoundState = () => ({
   focused: 1,
   voiceCount: 2,
   voices: Array.from({ length: MAX_VOICES }, defaultVoice),
+  bus: { feedback: 0 },
 })
 const defaultUi = () => ({ tab: 'sound', selectedPoolId: null })
 
@@ -113,6 +137,7 @@ export function StateProvider({ children }) {
         ...defaultVoice(),
         ...(loadedSound.voices?.[i] || {}),
       })),
+      bus: { feedback: 0, ...(loadedSound.bus || {}) },
     }
     setSoundState(merged)
     setUi({ ...defaultUi(), ...(data.ui || {}) })

@@ -8,13 +8,27 @@ export function SoundTab({ selectedPoolId }) {
   const { getAudioCtx, addPoolItem, soundState, setSoundState } = useStore()
   const [audioNodes] = useState(() => {
     const ctx = getAudioCtx()
-    const mixer = ctx.createGain()
-    mixer.gain.value = 1
+    // busInput receives all voices + the feedback tap.
+    // master is post-bus, routed to destination + msDest + the feedback send.
+    const busInput = ctx.createGain(); busInput.gain.value = 1
+    const master = ctx.createGain(); master.gain.value = 1
+    const feedback = ctx.createGain(); feedback.gain.value = 0
     const msDest = ctx.createMediaStreamDestination()
-    mixer.connect(ctx.destination)
-    mixer.connect(msDest)
-    return { mixer, msDest }
+    busInput.connect(master)
+    master.connect(ctx.destination)
+    master.connect(msDest)
+    master.connect(feedback)
+    feedback.connect(busInput)
+    return { busInput, master, feedback, msDest, mixer: busInput }
   })
+
+  // live howlround amount
+  useEffect(() => {
+    const amt = soundState.bus?.feedback ?? 0
+    audioNodes.feedback.gain.value = amt
+  }, [soundState.bus?.feedback, audioNodes])
+
+  const setHowl = (amt) => setSoundState(prev => ({ ...prev, bus: { ...(prev.bus || {}), feedback: amt } }))
 
   // stable per-index snapshot callbacks that write to store
   const mkSnapCb = (i) => useCallback((snap) => {
@@ -139,6 +153,19 @@ export function SoundTab({ selectedPoolId }) {
         <button onClick={() => setVoiceCount(voiceCount - 1)} disabled={voiceCount <= 1}>− Voice</button>
         <button onClick={() => setVoiceCount(voiceCount + 1)} disabled={voiceCount >= MAX_VOICES}>+ Voice</button>
         <span style={{ color: 'var(--hl)', fontSize: 11, marginLeft: 4 }}>{voiceCount}/{MAX_VOICES}</span>
+        <div style={{ width: 12 }} />
+        <div className="howl">
+          <label>Howlround</label>
+          <input
+            type="range"
+            min="0"
+            max="0.9"
+            step="0.01"
+            value={soundState.bus?.feedback ?? 0}
+            onChange={e => setHowl(+e.target.value)}
+          />
+          <span className="value">{Math.round((soundState.bus?.feedback ?? 0) * 100)}%</span>
+        </div>
         <div style={{ width: 12 }} />
         {!recording
           ? <button onClick={startRecord}>● Rec mix → pool</button>

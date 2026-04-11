@@ -1,11 +1,33 @@
-import { useRef } from 'react'
+import { useRef, useState, useMemo } from 'react'
 import { useStore } from './state'
 import { decodeFile } from './audio'
+
+const KINDS = [
+  { id: 'imported', label: 'Imported' },
+  { id: 'capture', label: 'Sound' },
+  { id: 'object', label: 'Object' },
+  { id: 'timeline', label: 'Timeline' },
+]
 
 export function Pool({ selectedId, onSelect }) {
   const { pool, addPoolItem, removePoolItem, getAudioCtx, saveSession, loadSession } = useStore()
   const fileRef = useRef(null)
   const sessionRef = useRef(null)
+  const [activeKind, setActiveKind] = useState('imported')
+
+  const counts = useMemo(() => {
+    const c = { imported: 0, capture: 0, object: 0, timeline: 0 }
+    for (const item of pool) {
+      if (c[item.kind] !== undefined) c[item.kind]++
+      else c.imported++ // fall back for legacy 'sound' kind
+    }
+    return c
+  }, [pool])
+
+  const visible = useMemo(
+    () => pool.filter(it => (it.kind === activeKind) || (activeKind === 'imported' && (it.kind === 'sound' || !KINDS.find(k => k.id === it.kind)))),
+    [pool, activeKind]
+  )
 
   const onFiles = async (e) => {
     const files = Array.from(e.target.files || [])
@@ -13,7 +35,7 @@ export function Pool({ selectedId, onSelect }) {
     for (const f of files) {
       try {
         const buf = await decodeFile(f, ctx)
-        addPoolItem(f.name.replace(/\.[^.]+$/, ''), buf, 'sound')
+        addPoolItem(f.name.replace(/\.[^.]+$/, ''), buf, 'imported')
       } catch (err) { console.error('decode fail', f.name, err) }
     }
     e.target.value = ''
@@ -29,7 +51,7 @@ export function Pool({ selectedId, onSelect }) {
       rec.onstop = async () => {
         const blob = new Blob(chunks)
         const buf = await ctx.decodeAudioData(await blob.arrayBuffer())
-        addPoolItem(`mic_${pool.length + 1}`, buf, 'sound')
+        addPoolItem(`mic_${pool.length + 1}`, buf, 'imported')
         stream.getTracks().forEach(t => t.stop())
       }
       rec.start()
@@ -60,9 +82,28 @@ export function Pool({ selectedId, onSelect }) {
   return (
     <div className="pool">
       <h3>Pool</h3>
+      <div className="pool-tabs">
+        {KINDS.map(k => (
+          <button
+            key={k.id}
+            className={activeKind === k.id ? 'active' : ''}
+            onClick={() => setActiveKind(k.id)}
+          >
+            {k.label}
+            <span className="badge">{counts[k.id]}</span>
+          </button>
+        ))}
+      </div>
       <div className="list">
-        {pool.length === 0 && <div className="empty">empty<br />load sounds below</div>}
-        {pool.map(item => (
+        {visible.length === 0 && (
+          <div className="empty">
+            {activeKind === 'imported' && <>empty<br />load audio below</>}
+            {activeKind === 'capture' && <>no captures<br />record from sound tab</>}
+            {activeKind === 'object' && <>no objects<br />render from object tab</>}
+            {activeKind === 'timeline' && <>no mixes<br />render from timeline tab</>}
+          </div>
+        )}
+        {visible.map(item => (
           <div
             key={item.id}
             className={'pool-item' + (selectedId === item.id ? ' selected' : '')}

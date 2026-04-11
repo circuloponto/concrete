@@ -1,7 +1,7 @@
 import { useRef, useState, useEffect, useCallback } from 'react'
 import { PitchShifter } from 'soundtouchjs'
 import { useStore } from './state'
-import { reverseBuffer } from './audio'
+import { reverseBuffer, makeReverbIR, makeSaturationCurve } from './audio'
 
 export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = null) {
   const { getAudioCtx, getBuffer, pool } = useStore()
@@ -10,13 +10,38 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
   const [loadedPoolId, setLoadedPoolId] = useState(initial.loadedPoolId || '')
   const [playing, setPlaying] = useState(false)
   const [position, setPosition] = useState(0)
+
+  // tape
   const [tempo, setTempo] = useState(initial.tempo ?? 1)
   const [pitch, setPitch] = useState(initial.pitch ?? 0)
-  const [filterHz, setFilterHz] = useState(initial.filterHz ?? 6000)
-  const [delayTime, setDelayTime] = useState(initial.delayTime ?? 0.25)
-  const [delayFb, setDelayFb] = useState(initial.delayFb ?? 0.45)
-  const [wet, setWet] = useState(initial.wet ?? 0.5)
   const [voiceGain, setVoiceGain] = useState(initial.voiceGain ?? 1)
+  const [saturation, setSaturation] = useState(initial.saturation ?? 0)
+  const [wowRate, setWowRate] = useState(initial.wowRate ?? 0)
+  const [wowDepth, setWowDepth] = useState(initial.wowDepth ?? 0)
+
+  // filter
+  const [filterType, setFilterType] = useState(initial.filterType ?? 'lowpass')
+  const [filterHz, setFilterHz] = useState(initial.filterHz ?? 18000)
+  const [filterQ, setFilterQ] = useState(initial.filterQ ?? 0.7)
+
+  // modulation
+  const [ringFreq, setRingFreq] = useState(initial.ringFreq ?? 100)
+  const [ringAmount, setRingAmount] = useState(initial.ringAmount ?? 0)
+  const [flangerRate, setFlangerRate] = useState(initial.flangerRate ?? 0.3)
+  const [flangerDepth, setFlangerDepth] = useState(initial.flangerDepth ?? 0.4)
+  const [flangerFb, setFlangerFb] = useState(initial.flangerFb ?? 0.3)
+  const [flangerMix, setFlangerMix] = useState(initial.flangerMix ?? 0)
+  const [tremRate, setTremRate] = useState(initial.tremRate ?? 4)
+  const [tremDepth, setTremDepth] = useState(initial.tremDepth ?? 0)
+
+  // space
+  const [delayTime, setDelayTime] = useState(initial.delayTime ?? 0.25)
+  const [delayFb, setDelayFb] = useState(initial.delayFb ?? 0.35)
+  const [wet, setWet] = useState(initial.wet ?? 0)
+  const [reverbSize, setReverbSize] = useState(initial.reverbSize ?? 1.5)
+  const [reverbWet, setReverbWet] = useState(initial.reverbWet ?? 0)
+
+  // loop
   const [reversed, setReversed] = useState(initial.reversed ?? false)
   const [loopStart, setLoopStart] = useState(initial.loopStart ?? 0)
   const [loopEnd, setLoopEnd] = useState(initial.loopEnd ?? 1)
@@ -52,8 +77,6 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
     setPosition(0)
   }, [getBuffer, pool, stop])
 
-  // On mount: if an initial poolId was passed (session restore), attach buffer
-  // without clobbering the already-initialized loop/reverse params.
   const mountedRef = useRef(false)
   useEffect(() => {
     if (mountedRef.current) return
@@ -72,32 +95,129 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
     if (nodesRef.current) return nodesRef.current
     if (!outputNode) return null
     const ctx = getAudioCtx()
+    const oscs = []
+    const mkOsc = (freq, type = 'sine') => {
+      const o = ctx.createOscillator()
+      o.type = type
+      o.frequency.value = freq
+      o.start()
+      oscs.push(o)
+      return o
+    }
+
+    // inputs
     const scrubBus = ctx.createGain(); scrubBus.gain.value = 1
     const shifterBus = ctx.createGain(); shifterBus.gain.value = 1
+
+    // saturation
+    const sat = ctx.createWaveShaper()
+    sat.curve = makeSaturationCurve(saturation)
+    sat.oversample = '2x'
+
+    // wow/flutter: a short base delay modulated by an LFO
+    const wowDelay = ctx.createDelay(0.05)
+    wowDelay.delayTime.value = 0.008
+    const wowLfo = mkOsc(wowRate || 0.01, 'sine')
+    const wowDepthGain = ctx.createGain()
+    wowDepthGain.gain.value = wowDepth * 0.005
+    wowLfo.connect(wowDepthGain).connect(wowDelay.delayTime)
+
+    // multimode filter
     const filter = ctx.createBiquadFilter()
-    filter.type = 'lowpass'
+    filter.type = filterType
     filter.frequency.value = filterHz
-    filter.Q.value = 0.7
+    filter.Q.value = filterQ
+
+    // ring modulator: dry path + wet path where wet gain is driven by osc
+    const ringDry = ctx.createGain(); ringDry.gain.value = 1 - ringAmount
+    const ringWet = ctx.createGain(); ringWet.gain.value = 0
+    const ringMix = ctx.createGain(); ringMix.gain.value = ringAmount
+    const ringOsc = mkOsc(ringFreq, 'sine')
+    const ringDepth = ctx.createGain(); ringDepth.gain.value = 1
+    ringOsc.connect(ringDepth).connect(ringWet.gain)
+
+    // ring mod sum
+    const ringSum = ctx.createGain(); ringSum.gain.value = 1
+
+    // tremolo (amplitude LFO)
+    const tremoloGain = ctx.createGain()
+    tremoloGain.gain.value = 1 - tremDepth / 2
+    const tremoloLfo = mkOsc(Math.max(0.01, tremRate), 'sine')
+    const tremoloDepthGain = ctx.createGain()
+    tremoloDepthGain.gain.value = tremDepth / 2
+    tremoloLfo.connect(tremoloDepthGain).connect(tremoloGain.gain)
+
+    // flanger
+    const flangerDelay = ctx.createDelay(0.05)
+    flangerDelay.delayTime.value = 0.002
+    const flangerLfo = mkOsc(flangerRate, 'sine')
+    const flangerDepthGain = ctx.createGain()
+    flangerDepthGain.gain.value = flangerDepth * 0.002
+    flangerLfo.connect(flangerDepthGain).connect(flangerDelay.delayTime)
+    const flangerFbGain = ctx.createGain(); flangerFbGain.gain.value = flangerFb
+    const flangerMixGain = ctx.createGain(); flangerMixGain.gain.value = flangerMix
+
+    // tape delay
+    const tapeDelay = ctx.createDelay(2)
+    tapeDelay.delayTime.value = delayTime
+    const tapeFbGain = ctx.createGain(); tapeFbGain.gain.value = delayFb
+    const tapeWetGain = ctx.createGain(); tapeWetGain.gain.value = wet
+
+    // reverb
+    const reverb = ctx.createConvolver()
+    reverb.buffer = makeReverbIR(ctx, reverbSize)
+    const reverbWetGain = ctx.createGain(); reverbWetGain.gain.value = reverbWet
+
+    // dry path
     const dry = ctx.createGain(); dry.gain.value = 1
-    const delay = ctx.createDelay(2)
-    delay.delayTime.value = delayTime
-    const feedback = ctx.createGain(); feedback.gain.value = delayFb
-    const wetGain = ctx.createGain(); wetGain.gain.value = wet
+
     const master = ctx.createGain(); master.gain.value = voiceGain
-    scrubBus.connect(filter)
-    shifterBus.connect(filter)
-    filter.connect(dry).connect(master)
-    filter.connect(delay)
-    delay.connect(feedback).connect(delay)
-    delay.connect(wetGain).connect(master)
+
+    // Wiring
+    // inputs → saturation
+    scrubBus.connect(sat)
+    shifterBus.connect(sat)
+    // serial chain
+    sat.connect(wowDelay).connect(filter)
+    // ring mod split
+    filter.connect(ringDry).connect(ringSum)
+    filter.connect(ringWet).connect(ringMix).connect(ringSum)
+    // tremolo in series after ringmod
+    ringSum.connect(tremoloGain)
+    // parallel FX branches from tremolo output
+    tremoloGain.connect(dry).connect(master)
+    tremoloGain.connect(flangerDelay)
+    flangerDelay.connect(flangerFbGain).connect(flangerDelay)
+    flangerDelay.connect(flangerMixGain).connect(master)
+    tremoloGain.connect(tapeDelay)
+    tapeDelay.connect(tapeFbGain).connect(tapeDelay)
+    tapeDelay.connect(tapeWetGain).connect(master)
+    tremoloGain.connect(reverb)
+    reverb.connect(reverbWetGain).connect(master)
     master.connect(outputNode)
-    nodesRef.current = { scrubBus, shifterBus, filter, dry, delay, feedback, wetGain, master }
+
+    nodesRef.current = {
+      scrubBus, shifterBus,
+      sat,
+      wowDelay, wowLfo, wowDepthGain,
+      filter,
+      ringDry, ringWet, ringMix, ringOsc, ringDepth,
+      ringSum,
+      tremoloGain, tremoloLfo, tremoloDepthGain,
+      flangerDelay, flangerLfo, flangerDepthGain, flangerFbGain, flangerMixGain,
+      tapeDelay, tapeFbGain, tapeWetGain,
+      reverb, reverbWetGain,
+      dry, master,
+      oscs,
+    }
     return nodesRef.current
   }, [getAudioCtx, outputNode])
 
   const teardownEffects = useCallback(() => {
     if (!nodesRef.current) return
-    Object.values(nodesRef.current).forEach(n => { try { n.disconnect() } catch {} })
+    const { oscs, ...rest } = nodesRef.current
+    if (oscs) oscs.forEach(o => { try { o.stop() } catch {} })
+    Object.values(rest).forEach(n => { try { n.disconnect() } catch {} })
     nodesRef.current = null
   }, [])
 
@@ -134,22 +254,65 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
     rafRef.current = requestAnimationFrame(tick)
   }, [buffer, reversed, tempo, pitch, loopStart, loopEnd, ensureEffects, getAudioCtx])
 
-  // Push a snapshot to parent whenever any serializable field changes.
+  // Snapshot
   useEffect(() => {
     if (!onSnapshot) return
     onSnapshot({
-      loadedPoolId, tempo, pitch, filterHz, delayTime, delayFb, wet,
-      voiceGain, reversed, loopStart, loopEnd, view,
+      loadedPoolId, tempo, pitch, voiceGain, reversed, loopStart, loopEnd, view,
+      filterType, filterHz, filterQ,
+      saturation, wowRate, wowDepth,
+      ringFreq, ringAmount,
+      flangerRate, flangerDepth, flangerFb, flangerMix,
+      tremRate, tremDepth,
+      delayTime, delayFb, wet,
+      reverbSize, reverbWet,
     })
-  }, [loadedPoolId, tempo, pitch, filterHz, delayTime, delayFb, wet, voiceGain, reversed, loopStart, loopEnd, view, onSnapshot])
+  }, [onSnapshot,
+    loadedPoolId, tempo, pitch, voiceGain, reversed, loopStart, loopEnd, view,
+    filterType, filterHz, filterQ,
+    saturation, wowRate, wowDepth,
+    ringFreq, ringAmount,
+    flangerRate, flangerDepth, flangerFb, flangerMix,
+    tremRate, tremDepth,
+    delayTime, delayFb, wet,
+    reverbSize, reverbWet,
+  ])
 
+  // Live updates
   useEffect(() => { if (shifterRef.current) shifterRef.current.tempo = tempo }, [tempo])
   useEffect(() => { if (shifterRef.current) shifterRef.current.pitchSemitones = pitch }, [pitch])
-  useEffect(() => { if (nodesRef.current) nodesRef.current.filter.frequency.value = filterHz }, [filterHz])
-  useEffect(() => { if (nodesRef.current) nodesRef.current.delay.delayTime.value = delayTime }, [delayTime])
-  useEffect(() => { if (nodesRef.current) nodesRef.current.feedback.gain.value = delayFb }, [delayFb])
-  useEffect(() => { if (nodesRef.current) nodesRef.current.wetGain.gain.value = wet }, [wet])
   useEffect(() => { if (nodesRef.current) nodesRef.current.master.gain.value = voiceGain }, [voiceGain])
+  useEffect(() => { if (nodesRef.current) nodesRef.current.sat.curve = makeSaturationCurve(saturation) }, [saturation])
+  useEffect(() => { if (nodesRef.current) nodesRef.current.wowLfo.frequency.value = Math.max(0.01, wowRate) }, [wowRate])
+  useEffect(() => { if (nodesRef.current) nodesRef.current.wowDepthGain.gain.value = wowDepth * 0.005 }, [wowDepth])
+  useEffect(() => { if (nodesRef.current) nodesRef.current.filter.type = filterType }, [filterType])
+  useEffect(() => { if (nodesRef.current) nodesRef.current.filter.frequency.value = filterHz }, [filterHz])
+  useEffect(() => { if (nodesRef.current) nodesRef.current.filter.Q.value = filterQ }, [filterQ])
+  useEffect(() => { if (nodesRef.current) nodesRef.current.ringOsc.frequency.value = ringFreq }, [ringFreq])
+  useEffect(() => {
+    if (nodesRef.current) {
+      nodesRef.current.ringDry.gain.value = 1 - ringAmount
+      nodesRef.current.ringMix.gain.value = ringAmount
+    }
+  }, [ringAmount])
+  useEffect(() => { if (nodesRef.current) nodesRef.current.flangerLfo.frequency.value = Math.max(0.01, flangerRate) }, [flangerRate])
+  useEffect(() => { if (nodesRef.current) nodesRef.current.flangerDepthGain.gain.value = flangerDepth * 0.002 }, [flangerDepth])
+  useEffect(() => { if (nodesRef.current) nodesRef.current.flangerFbGain.gain.value = flangerFb }, [flangerFb])
+  useEffect(() => { if (nodesRef.current) nodesRef.current.flangerMixGain.gain.value = flangerMix }, [flangerMix])
+  useEffect(() => { if (nodesRef.current) nodesRef.current.tremoloLfo.frequency.value = Math.max(0.01, tremRate) }, [tremRate])
+  useEffect(() => {
+    if (nodesRef.current) {
+      nodesRef.current.tremoloGain.gain.value = 1 - tremDepth / 2
+      nodesRef.current.tremoloDepthGain.gain.value = tremDepth / 2
+    }
+  }, [tremDepth])
+  useEffect(() => { if (nodesRef.current) nodesRef.current.tapeDelay.delayTime.value = delayTime }, [delayTime])
+  useEffect(() => { if (nodesRef.current) nodesRef.current.tapeFbGain.gain.value = delayFb }, [delayFb])
+  useEffect(() => { if (nodesRef.current) nodesRef.current.tapeWetGain.gain.value = wet }, [wet])
+  useEffect(() => {
+    if (nodesRef.current) nodesRef.current.reverb.buffer = makeReverbIR(getAudioCtx(), reverbSize)
+  }, [reverbSize, getAudioCtx])
+  useEffect(() => { if (nodesRef.current) nodesRef.current.reverbWetGain.gain.value = reverbWet }, [reverbWet])
 
   const onScrub = useCallback((p, delta, phase) => {
     if (!buffer) return
@@ -234,13 +397,33 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
     voiceNumber,
     buffer, sourceName, loadedPoolId,
     playing, position,
+    // tape
     tempo, setTempo,
     pitch, setPitch,
+    voiceGain, setVoiceGain,
+    saturation, setSaturation,
+    wowRate, setWowRate,
+    wowDepth, setWowDepth,
+    // filter
+    filterType, setFilterType,
     filterHz, setFilterHz,
+    filterQ, setFilterQ,
+    // mod
+    ringFreq, setRingFreq,
+    ringAmount, setRingAmount,
+    flangerRate, setFlangerRate,
+    flangerDepth, setFlangerDepth,
+    flangerFb, setFlangerFb,
+    flangerMix, setFlangerMix,
+    tremRate, setTremRate,
+    tremDepth, setTremDepth,
+    // space
     delayTime, setDelayTime,
     delayFb, setDelayFb,
     wet, setWet,
-    voiceGain, setVoiceGain,
+    reverbSize, setReverbSize,
+    reverbWet, setReverbWet,
+    // loop
     reversed, loopStart, setLoopStart, loopEnd, setLoopEnd,
     view, setView,
     play, stop, onScrub, toggleReverse, loadFromPool,
