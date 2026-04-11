@@ -1,0 +1,118 @@
+export async function decodeFile(file, ctx) {
+  const arr = await file.arrayBuffer()
+  return await ctx.decodeAudioData(arr)
+}
+
+export function encodeWAV(buffer) {
+  const numChannels = buffer.numberOfChannels
+  const sampleRate = buffer.sampleRate
+  const length = buffer.length * numChannels * 2 + 44
+  const view = new DataView(new ArrayBuffer(length))
+  let offset = 0
+  const writeString = (s) => { for (let i = 0; i < s.length; i++) view.setUint8(offset++, s.charCodeAt(i)) }
+  writeString('RIFF')
+  view.setUint32(offset, length - 8, true); offset += 4
+  writeString('WAVE')
+  writeString('fmt ')
+  view.setUint32(offset, 16, true); offset += 4
+  view.setUint16(offset, 1, true); offset += 2
+  view.setUint16(offset, numChannels, true); offset += 2
+  view.setUint32(offset, sampleRate, true); offset += 4
+  view.setUint32(offset, sampleRate * numChannels * 2, true); offset += 4
+  view.setUint16(offset, numChannels * 2, true); offset += 2
+  view.setUint16(offset, 16, true); offset += 2
+  writeString('data')
+  view.setUint32(offset, buffer.length * numChannels * 2, true); offset += 4
+  const channels = []
+  for (let c = 0; c < numChannels; c++) channels.push(buffer.getChannelData(c))
+  for (let i = 0; i < buffer.length; i++) {
+    for (let c = 0; c < numChannels; c++) {
+      let s = Math.max(-1, Math.min(1, channels[c][i]))
+      view.setInt16(offset, s < 0 ? s * 0x8000 : s * 0x7FFF, true)
+      offset += 2
+    }
+  }
+  return new Uint8Array(view.buffer)
+}
+
+export function bufferToBase64(buffer) {
+  const wav = encodeWAV(buffer)
+  let binary = ''
+  const chunk = 0x8000
+  for (let i = 0; i < wav.length; i += chunk) {
+    binary += String.fromCharCode.apply(null, wav.subarray(i, i + chunk))
+  }
+  return btoa(binary)
+}
+
+export async function base64ToBuffer(b64, ctx) {
+  const binary = atob(b64)
+  const bytes = new Uint8Array(binary.length)
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i)
+  return await ctx.decodeAudioData(bytes.buffer)
+}
+
+export function reverseBuffer(buffer, ctx) {
+  const out = ctx.createBuffer(buffer.numberOfChannels, buffer.length, buffer.sampleRate)
+  for (let c = 0; c < buffer.numberOfChannels; c++) {
+    const src = buffer.getChannelData(c)
+    const dst = out.getChannelData(c)
+    for (let i = 0; i < src.length; i++) dst[i] = src[src.length - 1 - i]
+  }
+  return out
+}
+
+export function downloadWav(buffer, name) {
+  const wav = encodeWAV(buffer)
+  const blob = new Blob([wav], { type: 'audio/wav' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = name || 'render.wav'
+  a.click()
+  URL.revokeObjectURL(url)
+}
+
+// Render a multitrack arrangement to an AudioBuffer via OfflineAudioContext.
+// tracks: array of arrays of clips {poolId, offset, sourceStart, sourceEnd, fadeIn, fadeOut, gain}
+// getBuffer: (poolId) => AudioBuffer
+export async function renderArrangement(tracks, getBuffer, duration) {
+  if (!duration || duration <= 0) duration = 0.1
+  const sampleRate = 44100
+  const numCh = 2
+  const offline = new OfflineAudioContext(numCh, Math.ceil(duration * sampleRate), sampleRate)
+  for (const track of tracks) {
+    for (const clip of track) {
+      const buf = getBuffer(clip.poolId)
+      if (!buf) continue
+      const src = offline.createBufferSource()
+      src.buffer = buf
+      const gain = offline.createGain()
+      const clipLen = Math.max(0.001, clip.sourceEnd - clip.sourceStart)
+      const fi = Math.min(clip.fadeIn || 0, clipLen / 2)
+      const fo = Math.min(clip.fadeOut || 0, clipLen / 2)
+      const g = clip.gain ?? 1
+      const start = clip.offset
+      gain.gain.setValueAtTime(fi > 0 ? 0 : g, start)
+      if (fi > 0) gain.gain.linearRampToValueAtTime(g, start + fi)
+      if (fo > 0) {
+        gain.gain.setValueAtTime(g, start + clipLen - fo)
+        gain.gain.linearRampToValueAtTime(0, start + clipLen)
+      }
+      src.connect(gain).connect(offline.destination)
+      src.start(start, clip.sourceStart, clipLen)
+    }
+  }
+  return await offline.startRendering()
+}
+
+export function computeArrangementDuration(tracks) {
+  let max = 0
+  for (const track of tracks) {
+    for (const clip of track) {
+      const end = clip.offset + (clip.sourceEnd - clip.sourceStart)
+      if (end > max) max = end
+    }
+  }
+  return max
+}
