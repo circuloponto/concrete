@@ -99,44 +99,109 @@ export function downloadWav(buffer, name) {
   URL.revokeObjectURL(url)
 }
 
-// Render a multitrack arrangement to an AudioBuffer via OfflineAudioContext.
-// tracks: array of arrays of clips {poolId, offset, sourceStart, sourceEnd, fadeIn, fadeOut, gain}
-// getBuffer: (poolId) => AudioBuffer
+// Numeric fade-curve helpers — `power` controls the shape (1 = linear,
+// > 1 slow start fast finish, < 1 fast start slow finish). Accepts legacy
+// string presets too (linear/exp/log/scurve) for backward compat.
+function curveToPower(c) {
+  if (typeof c === 'number' && c > 0) return c
+  switch (c) {
+    case 'exp': return 2.5
+    case 'log': return 0.4
+    case 'scurve': return 1.6
+    default: return 1
+  }
+}
+
+export function makeFadeInCurve(toValue, steps, curve) {
+  const p = curveToPower(curve)
+  const arr = new Float32Array(steps)
+  for (let i = 0; i < steps; i++) {
+    const t = i / (steps - 1)
+    arr[i] = Math.pow(t, p) * toValue
+  }
+  return arr
+}
+
+export function makeFadeOutCurve(fromValue, steps, curve) {
+  const p = curveToPower(curve)
+  const arr = new Float32Array(steps)
+  for (let i = 0; i < steps; i++) {
+    const t = i / (steps - 1)
+    arr[i] = (1 - Math.pow(t, p)) * fromValue
+  }
+  return arr
+}
+
+// True playable length of a clip — clamped to what the buffer actually provides.
+export function clipPlayLen(clip, getBuffer) {
+  const wanted = Math.max(0, (clip.sourceEnd || 0) - (clip.sourceStart || 0))
+  if (!getBuffer) return wanted
+  const buf = getBuffer(clip.poolId)
+  if (!buf) return wanted
+  const available = Math.max(0, buf.duration - (clip.sourceStart || 0))
+  return Math.min(wanted, available)
+}
+
+// Tracks may be in new shape {clips, mute, solo, gain, pan} or legacy [clips].
+function normalizeTracks(tracks) {
+  return tracks.map(t => Array.isArray(t)
+    ? { clips: t, mute: false, solo: false, gain: 1, pan: 0 }
+    : { mute: false, solo: false, gain: 1, pan: 0, ...t, clips: t.clips || [] }
+  )
+}
+
 export async function renderArrangement(tracks, getBuffer, duration) {
   if (!duration || duration <= 0) duration = 0.1
   const sampleRate = 44100
   const numCh = 2
   const offline = new OfflineAudioContext(numCh, Math.ceil(duration * sampleRate), sampleRate)
-  for (const track of tracks) {
-    for (const clip of track) {
+  const norm = normalizeTracks(tracks)
+  const anySolo = norm.some(t => t.solo)
+  for (const track of norm) {
+    if (track.mute) continue
+    if (anySolo && !track.solo) continue
+    const trackGain = offline.createGain()
+    trackGain.gain.value = track.gain ?? 1
+    const panner = offline.createStereoPanner()
+    panner.pan.value = track.pan ?? 0
+    trackGain.connect(panner).connect(offline.destination)
+    for (const clip of track.clips) {
       const buf = getBuffer(clip.poolId)
       if (!buf) continue
       const src = offline.createBufferSource()
       src.buffer = buf
       const gain = offline.createGain()
-      const clipLen = Math.max(0.001, clip.sourceEnd - clip.sourceStart)
+      const clipLen = Math.max(0.001, clipPlayLen(clip, getBuffer))
       const fi = Math.min(clip.fadeIn || 0, clipLen / 2)
       const fo = Math.min(clip.fadeOut || 0, clipLen / 2)
       const g = clip.gain ?? 1
       const start = clip.offset
-      gain.gain.setValueAtTime(fi > 0 ? 0 : g, start)
-      if (fi > 0) gain.gain.linearRampToValueAtTime(g, start + fi)
-      if (fo > 0) {
-        gain.gain.setValueAtTime(g, start + clipLen - fo)
-        gain.gain.linearRampToValueAtTime(0, start + clipLen)
+      // fade in
+      if (fi > 0) {
+        gain.gain.setValueCurveAtTime(makeFadeInCurve(g, 32, clip.fadeInCurve), start, fi)
+      } else {
+        gain.gain.setValueAtTime(g, start)
       }
-      src.connect(gain).connect(offline.destination)
+      // body
+      if (fi + fo < clipLen) gain.gain.setValueAtTime(g, start + Math.max(fi, 0.0001))
+      // fade out
+      if (fo > 0) {
+        gain.gain.setValueCurveAtTime(makeFadeOutCurve(g, 32, clip.fadeOutCurve), start + clipLen - fo, fo)
+      }
+      src.connect(gain).connect(trackGain)
       src.start(start, clip.sourceStart, clipLen)
     }
   }
   return await offline.startRendering()
 }
 
-export function computeArrangementDuration(tracks) {
+export function computeArrangementDuration(tracks, getBuffer) {
+  const norm = normalizeTracks(tracks)
   let max = 0
-  for (const track of tracks) {
-    for (const clip of track) {
-      const end = clip.offset + (clip.sourceEnd - clip.sourceStart)
+  for (const track of norm) {
+    for (const clip of track.clips) {
+      const len = getBuffer ? clipPlayLen(clip, getBuffer) : Math.max(0, clip.sourceEnd - clip.sourceStart)
+      const end = (clip.offset || 0) + len
       if (end > max) max = end
     }
   }

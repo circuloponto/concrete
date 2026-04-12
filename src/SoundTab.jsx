@@ -167,12 +167,15 @@ export function SoundTab({ selectedPoolId }) {
           <span className="value">{Math.round((soundState.bus?.feedback ?? 0) * 100)}%</span>
         </div>
         <div style={{ width: 12 }} />
-        {!recording
-          ? <button onClick={startRecord}>● Rec mix → pool</button>
-          : <button className="recording" onClick={stopRecord}>Stop rec</button>}
+        <span data-tutorial="rec">
+          {!recording
+            ? <button onClick={startRecord}>● Rec mix → pool</button>
+            : <button className="recording" onClick={stopRecord}>Stop rec</button>}
+        </span>
       </div>
       <div
         className="voice-players-row scroll"
+        data-tutorial="voice-players"
         ref={rowRef}
         onPointerDown={onRowPointerDown}
         onPointerMove={onRowPointerMove}

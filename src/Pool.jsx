@@ -80,7 +80,7 @@ export function Pool({ selectedId, onSelect }) {
   }
 
   return (
-    <div className="pool">
+    <div className="pool" data-tutorial="pool">
       <h3>Pool</h3>
       <div className="pool-tabs">
         {KINDS.map(k => (
@@ -121,7 +121,7 @@ export function Pool({ selectedId, onSelect }) {
           </div>
         ))}
       </div>
-      <div className="pool-actions">
+      <div className="pool-actions" data-tutorial="save-actions">
         <button onClick={() => fileRef.current.click()}>Load audio</button>
         <button onClick={onMic}>Record mic</button>
         <input ref={fileRef} type="file" accept="audio/*" multiple onChange={onFiles} />

@@ -1,4 +1,42 @@
 import { useState } from 'react'
+import { DEFAULT_MOD } from './modulation'
+
+function PanelTitle({ children, active, onToggle }) {
+  return (
+    <h4>
+      {children}
+      {onToggle && (
+        <button
+          className={'tiny-toggle' + (active ? ' active' : '')}
+          onClick={onToggle}
+        >{active ? 'ON' : 'OFF'}</button>
+      )}
+    </h4>
+  )
+}
+
+const WAVES = [
+  ['sine', '∿'],
+  ['triangle', '△'],
+  ['square', '◻'],
+  ['saw', '◺'],
+  ['ramp', '◹'],
+  ['random', '⁓'],
+]
+
+function Slider({ min, max, step, value, onChange }) {
+  return (
+    <input
+      className="slider"
+      type="range"
+      min={min}
+      max={max}
+      step={step}
+      value={value}
+      onChange={e => onChange(+e.target.value)}
+    />
+  )
+}
 
 function Row({ label, value, unit, children }) {
   return (
@@ -9,9 +47,54 @@ function Row({ label, value, unit, children }) {
     </div>
   )
 }
-const Slider = ({ min, max, step, value, onChange }) => (
-  <input className="slider" type="range" min={min} max={max} step={step} value={value} onChange={e => onChange(+e.target.value)} />
-)
+
+// Slider row with a modulation toggle — expands an inline LFO strip when active.
+function ModRow({ voice, pKey, label, min, max, step, value, onChange, format, unit }) {
+  const mod = voice.modulators?.[pKey]
+  const active = !!mod?.enabled
+  const toggle = () => {
+    if (active) voice.setModulator(pKey, null)
+    else voice.setModulator(pKey, { ...DEFAULT_MOD })
+  }
+  return (
+    <>
+      <div className={'row' + (active ? ' modded' : '')}>
+        <label>{label}</label>
+        <input className="slider" type="range" min={min} max={max} step={step} value={value} onChange={e => onChange(+e.target.value)} />
+        <button
+          className={'mod-btn' + (active ? ' active' : '')}
+          onClick={toggle}
+          title={active ? 'remove LFO' : 'add LFO'}
+        >M</button>
+        <span className="value">{format(value)}{unit ? ` ${unit}` : ''}</span>
+      </div>
+      {active && (
+        <div className="mod-strip">
+          <div className="mod-waves">
+            {WAVES.map(([w, icon]) => (
+              <button
+                key={w}
+                className={mod.wave === w ? 'active' : ''}
+                onClick={() => voice.setModulator(pKey, { wave: w })}
+                title={w}
+              >{icon}</button>
+            ))}
+          </div>
+          <div className="mod-knob">
+            <span>rate</span>
+            <input type="range" min="0.05" max="10" step="0.05" value={mod.rate} onChange={e => voice.setModulator(pKey, { rate: +e.target.value })} />
+            <span className="mod-val">{mod.rate.toFixed(2)}</span>
+          </div>
+          <div className="mod-knob">
+            <span>depth</span>
+            <input type="range" min="0" max="1" step="0.01" value={mod.depth} onChange={e => voice.setModulator(pKey, { depth: +e.target.value })} />
+            <span className="mod-val">{Math.round(mod.depth * 100)}%</span>
+          </div>
+        </div>
+      )}
+    </>
+  )
+}
 
 export function VoiceControls({ voice }) {
   const [sub, setSub] = useState('tape')
@@ -19,15 +102,21 @@ export function VoiceControls({ voice }) {
   const v = voice
   const fmtPct = (x) => `${Math.round(x * 100)}%`
   const fmtHz = (hz) => hz >= 1000 ? `${(hz / 1000).toFixed(2)}k` : `${Math.round(hz)}`
+  const fmtNum2 = (x) => x.toFixed(2)
+  const fmtNum1 = (x) => x.toFixed(1)
+  const fmtPitch = (x) => `${x > 0 ? '+' : ''}${x}`
+  const fmtMs = (x) => `${Math.round(x * 1000)}`
 
   return (
     <div className="voice-controls">
       <div className="voice-controls-header">
         <span>editing <b>Voice {v.voiceNumber}</b></span>
-        <div className="sub-tabs">
+        <div className="sub-tabs" data-tutorial="sub-tabs">
           <button className={sub === 'tape' ? 'active' : ''} onClick={() => setSub('tape')}>Tape</button>
           <button className={sub === 'filter' ? 'active' : ''} onClick={() => setSub('filter')}>Filter</button>
           <button className={sub === 'mod' ? 'active' : ''} onClick={() => setSub('mod')}>Mod</button>
+          <button className={sub === 'grain' ? 'active' : ''} onClick={() => setSub('grain')}>Grain</button>
+          <button className={sub === 'motion' ? 'active' : ''} onClick={() => setSub('motion')}>Motion</button>
           <button className={sub === 'space' ? 'active' : ''} onClick={() => setSub('space')}>Space</button>
           <button className={sub === 'loop' ? 'active' : ''} onClick={() => setSub('loop')}>Loop</button>
         </div>
@@ -37,24 +126,24 @@ export function VoiceControls({ voice }) {
         {sub === 'tape' && <>
           <div className="panel">
             <h4>Transport</h4>
-            <Row label="Speed" value={v.tempo.toFixed(2)} unit="×"><Slider min={0.25} max={4} step={0.01} value={v.tempo} onChange={v.setTempo} /></Row>
-            <Row label="Pitch" value={(v.pitch > 0 ? '+' : '') + v.pitch} unit="st"><Slider min={-24} max={24} step={1} value={v.pitch} onChange={v.setPitch} /></Row>
-            <Row label="Gain" value={fmtPct(v.voiceGain)}><Slider min={0} max={1.5} step={0.01} value={v.voiceGain} onChange={v.setVoiceGain} /></Row>
+            <ModRow voice={v} pKey="tempo" label="Speed" min={0.25} max={4} step={0.01} value={v.tempo} onChange={v.setTempo} format={fmtNum2} unit="×" />
+            <ModRow voice={v} pKey="pitch" label="Pitch" min={-24} max={24} step={1} value={v.pitch} onChange={v.setPitch} format={fmtPitch} unit="st" />
+            <ModRow voice={v} pKey="voiceGain" label="Gain" min={0} max={1.5} step={0.01} value={v.voiceGain} onChange={v.setVoiceGain} format={fmtPct} />
           </div>
           <div className="panel">
-            <h4>Saturation</h4>
+            <PanelTitle active={v.satActive} onToggle={() => v.setSatActive(!v.satActive)}>Saturation</PanelTitle>
             <Row label="Drive" value={fmtPct(v.saturation)}><Slider min={0} max={1} step={0.01} value={v.saturation} onChange={v.setSaturation} /></Row>
           </div>
           <div className="panel">
-            <h4>Wow / Flutter</h4>
-            <Row label="Rate" value={v.wowRate.toFixed(2)} unit="Hz"><Slider min={0} max={10} step={0.05} value={v.wowRate} onChange={v.setWowRate} /></Row>
-            <Row label="Depth" value={fmtPct(v.wowDepth)}><Slider min={0} max={1} step={0.01} value={v.wowDepth} onChange={v.setWowDepth} /></Row>
+            <PanelTitle active={v.wowActive} onToggle={() => v.setWowActive(!v.wowActive)}>Wow / Flutter</PanelTitle>
+            <ModRow voice={v} pKey="wowRate" label="Rate" min={0} max={10} step={0.05} value={v.wowRate} onChange={v.setWowRate} format={fmtNum2} unit="Hz" />
+            <ModRow voice={v} pKey="wowDepth" label="Depth" min={0} max={1} step={0.01} value={v.wowDepth} onChange={v.setWowDepth} format={fmtPct} />
           </div>
         </>}
 
         {sub === 'filter' && <>
           <div className="panel">
-            <h4>Multimode filter</h4>
+            <PanelTitle active={v.filterActive} onToggle={() => v.setFilterActive(!v.filterActive)}>Multimode filter</PanelTitle>
             <div className="row">
               <label>Mode</label>
               <select value={v.filterType} onChange={e => v.setFilterType(e.target.value)} className="select-inline">
@@ -65,42 +154,90 @@ export function VoiceControls({ voice }) {
               </select>
               <span className="value" />
             </div>
-            <Row label="Cutoff" value={fmtHz(v.filterHz)}><Slider min={40} max={18000} step={10} value={v.filterHz} onChange={v.setFilterHz} /></Row>
-            <Row label="Resonance" value={v.filterQ.toFixed(1)}><Slider min={0.1} max={20} step={0.1} value={v.filterQ} onChange={v.setFilterQ} /></Row>
+            <ModRow voice={v} pKey="filterHz" label="Cutoff" min={40} max={18000} step={10} value={v.filterHz} onChange={v.setFilterHz} format={fmtHz} />
+            <ModRow voice={v} pKey="filterQ" label="Resonance" min={0.1} max={20} step={0.1} value={v.filterQ} onChange={v.setFilterQ} format={fmtNum1} />
           </div>
         </>}
 
         {sub === 'mod' && <>
           <div className="panel">
-            <h4>Ring modulator</h4>
-            <Row label="Freq" value={fmtHz(v.ringFreq)}><Slider min={1} max={2000} step={1} value={v.ringFreq} onChange={v.setRingFreq} /></Row>
-            <Row label="Amount" value={fmtPct(v.ringAmount)}><Slider min={0} max={1} step={0.01} value={v.ringAmount} onChange={v.setRingAmount} /></Row>
+            <PanelTitle active={v.ringActive} onToggle={() => v.setRingActive(!v.ringActive)}>Ring modulator</PanelTitle>
+            <ModRow voice={v} pKey="ringFreq" label="Freq" min={1} max={2000} step={1} value={v.ringFreq} onChange={v.setRingFreq} format={fmtHz} />
+            <ModRow voice={v} pKey="ringAmount" label="Amount" min={0} max={1} step={0.01} value={v.ringAmount} onChange={v.setRingAmount} format={fmtPct} />
           </div>
           <div className="panel">
-            <h4>Flanger</h4>
-            <Row label="Rate" value={v.flangerRate.toFixed(2)} unit="Hz"><Slider min={0.01} max={5} step={0.01} value={v.flangerRate} onChange={v.setFlangerRate} /></Row>
-            <Row label="Depth" value={fmtPct(v.flangerDepth)}><Slider min={0} max={1} step={0.01} value={v.flangerDepth} onChange={v.setFlangerDepth} /></Row>
-            <Row label="Feedback" value={fmtPct(v.flangerFb)}><Slider min={0} max={0.95} step={0.01} value={v.flangerFb} onChange={v.setFlangerFb} /></Row>
-            <Row label="Mix" value={fmtPct(v.flangerMix)}><Slider min={0} max={1} step={0.01} value={v.flangerMix} onChange={v.setFlangerMix} /></Row>
+            <PanelTitle active={v.flangerActive} onToggle={() => v.setFlangerActive(!v.flangerActive)}>Flanger</PanelTitle>
+            <ModRow voice={v} pKey="flangerRate" label="Rate" min={0.01} max={5} step={0.01} value={v.flangerRate} onChange={v.setFlangerRate} format={fmtNum2} unit="Hz" />
+            <ModRow voice={v} pKey="flangerDepth" label="Depth" min={0} max={1} step={0.01} value={v.flangerDepth} onChange={v.setFlangerDepth} format={fmtPct} />
+            <ModRow voice={v} pKey="flangerFb" label="Feedback" min={0} max={0.95} step={0.01} value={v.flangerFb} onChange={v.setFlangerFb} format={fmtPct} />
+            <ModRow voice={v} pKey="flangerMix" label="Mix" min={0} max={1} step={0.01} value={v.flangerMix} onChange={v.setFlangerMix} format={fmtPct} />
           </div>
           <div className="panel">
-            <h4>Tremolo</h4>
-            <Row label="Rate" value={v.tremRate.toFixed(1)} unit="Hz"><Slider min={0.1} max={20} step={0.1} value={v.tremRate} onChange={v.setTremRate} /></Row>
-            <Row label="Depth" value={fmtPct(v.tremDepth)}><Slider min={0} max={1} step={0.01} value={v.tremDepth} onChange={v.setTremDepth} /></Row>
+            <PanelTitle active={v.tremActive} onToggle={() => v.setTremActive(!v.tremActive)}>Tremolo</PanelTitle>
+            <ModRow voice={v} pKey="tremRate" label="Rate" min={0.1} max={20} step={0.1} value={v.tremRate} onChange={v.setTremRate} format={fmtNum1} unit="Hz" />
+            <ModRow voice={v} pKey="tremDepth" label="Depth" min={0} max={1} step={0.01} value={v.tremDepth} onChange={v.setTremDepth} format={fmtPct} />
           </div>
         </>}
 
         {sub === 'space' && <>
           <div className="panel">
-            <h4>Tape delay</h4>
-            <Row label="Time" value={`${Math.round(v.delayTime * 1000)}`} unit="ms"><Slider min={0} max={1.5} step={0.01} value={v.delayTime} onChange={v.setDelayTime} /></Row>
-            <Row label="Feedback" value={fmtPct(v.delayFb)}><Slider min={0} max={0.95} step={0.01} value={v.delayFb} onChange={v.setDelayFb} /></Row>
-            <Row label="Wet" value={fmtPct(v.wet)}><Slider min={0} max={1} step={0.01} value={v.wet} onChange={v.setWet} /></Row>
+            <PanelTitle active={v.delayActive} onToggle={() => v.setDelayActive(!v.delayActive)}>Tape delay</PanelTitle>
+            <ModRow voice={v} pKey="delayTime" label="Time" min={0} max={1.5} step={0.01} value={v.delayTime} onChange={v.setDelayTime} format={fmtMs} unit="ms" />
+            <ModRow voice={v} pKey="delayFb" label="Feedback" min={0} max={0.95} step={0.01} value={v.delayFb} onChange={v.setDelayFb} format={fmtPct} />
+            <ModRow voice={v} pKey="wet" label="Wet" min={0} max={1} step={0.01} value={v.wet} onChange={v.setWet} format={fmtPct} />
           </div>
           <div className="panel">
-            <h4>Spring reverb</h4>
-            <Row label="Size" value={v.reverbSize.toFixed(1)} unit="s"><Slider min={0.2} max={4} step={0.1} value={v.reverbSize} onChange={v.setReverbSize} /></Row>
-            <Row label="Wet" value={fmtPct(v.reverbWet)}><Slider min={0} max={1} step={0.01} value={v.reverbWet} onChange={v.setReverbWet} /></Row>
+            <PanelTitle active={v.reverbActive} onToggle={() => v.setReverbActive(!v.reverbActive)}>Spring reverb</PanelTitle>
+            <Row label="Size" value={fmtNum1(v.reverbSize)} unit="s"><Slider min={0.2} max={4} step={0.1} value={v.reverbSize} onChange={v.setReverbSize} /></Row>
+            <ModRow voice={v} pKey="reverbWet" label="Wet" min={0} max={1} step={0.01} value={v.reverbWet} onChange={v.setReverbWet} format={fmtPct} />
+          </div>
+        </>}
+
+        {sub === 'grain' && <>
+          <div className="panel">
+            <h4>Granulator
+              <button
+                className={'tiny-toggle' + (v.granActive ? ' active' : '')}
+                onClick={() => v.setGranActive(!v.granActive)}
+              >{v.granActive ? 'ON' : 'OFF'}</button>
+            </h4>
+            <ModRow voice={v} pKey="granPos" label="Position" min={0} max={1} step={0.001} value={v.granPos} onChange={v.setGranPos} format={fmtPct} />
+            <Row label="Drift" value={v.granDrift.toFixed(2)}><Slider min={-1} max={1} step={0.01} value={v.granDrift} onChange={v.setGranDrift} /></Row>
+            <Row label="Spray" value={fmtPct(v.granSpray)}><Slider min={0} max={0.5} step={0.001} value={v.granSpray} onChange={v.setGranSpray} /></Row>
+            <Row label="Size" value={`${Math.round(v.granSize * 1000)}`} unit="ms"><Slider min={0.005} max={0.5} step={0.001} value={v.granSize} onChange={v.setGranSize} /></Row>
+            <ModRow voice={v} pKey="granDensity" label="Density" min={1} max={100} step={1} value={v.granDensity} onChange={v.setGranDensity} format={(x) => `${Math.round(x)}`} unit="/s" />
+          </div>
+          <div className="panel">
+            <h4>Grain Pitch</h4>
+            <ModRow voice={v} pKey="granPitch" label="Pitch" min={-24} max={24} step={1} value={v.granPitch} onChange={v.setGranPitch} format={fmtPitch} unit="st" />
+            <Row label="Spread" value={v.granPitchSpread.toFixed(1)} unit="st"><Slider min={0} max={12} step={0.1} value={v.granPitchSpread} onChange={v.setGranPitchSpread} /></Row>
+            <Row label="Gain" value={fmtPct(v.granGain)}><Slider min={0} max={1.5} step={0.01} value={v.granGain} onChange={v.setGranGain} /></Row>
+          </div>
+          <div className="panel">
+            <h4>Cochlea (Const-Q)
+              <button
+                className={'tiny-toggle' + (v.granConstQ ? ' active' : '')}
+                onClick={() => v.setGranConstQ(!v.granConstQ)}
+              >{v.granConstQ ? 'ON' : 'OFF'}</button>
+            </h4>
+            <Row label="Resonance" value={v.granCQResonance.toFixed(1)}><Slider min={0.5} max={20} step={0.1} value={v.granCQResonance} onChange={v.setGranCQResonance} /></Row>
+            <div className="hint">24 log-spaced bandpasses · equal-loudness weighting</div>
+          </div>
+        </>}
+
+        {sub === 'motion' && <>
+          <div className="panel">
+            <h4>Doppler
+              <button
+                className={'tiny-toggle' + (v.dopplerActive ? ' active' : '')}
+                onClick={() => v.setDopplerActive(!v.dopplerActive)}
+              >{v.dopplerActive ? 'ON' : 'OFF'}</button>
+            </h4>
+            <ModRow voice={v} pKey="dopplerSpeed" label="Speed" min={0.05} max={5} step={0.01} value={v.dopplerSpeed} onChange={v.setDopplerSpeed} format={fmtNum2} unit="Hz" />
+            <Row label="Range" value={v.dopplerRange.toFixed(1)} unit="m"><Slider min={1} max={50} step={0.5} value={v.dopplerRange} onChange={v.setDopplerRange} /></Row>
+            <Row label="Min dist" value={v.dopplerMinDist.toFixed(1)} unit="m"><Slider min={0.2} max={10} step={0.1} value={v.dopplerMinDist} onChange={v.setDopplerMinDist} /></Row>
+            <Row label="Mix" value={fmtPct(v.dopplerMix)}><Slider min={0} max={1} step={0.01} value={v.dopplerMix} onChange={v.setDopplerMix} /></Row>
+            <div className="hint">source passes by the listener · 343 m/s air speed</div>
           </div>
         </>}
 

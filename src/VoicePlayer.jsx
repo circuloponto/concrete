@@ -21,6 +21,7 @@ export function VoicePlayer({ voice, focused, onFocus }) {
   return (
     <div
       className={'voice-player' + (focused ? ' focused' : '')}
+      data-tutorial="voice-player"
       onPointerDown={onFocus}
       onDrop={onDrop}
       onDragOver={onDragOver}

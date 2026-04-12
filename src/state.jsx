@@ -6,6 +6,17 @@ const Ctx = createContext(null)
 let _id = 0
 const genId = () => `id_${Date.now().toString(36)}_${(_id++).toString(36)}`
 
+export const makeTrack = () => ({ clips: [], mute: false, solo: false, gain: 1, pan: 0 })
+
+// Migrate old track shapes into the new {clips, mute, solo, gain, pan} object.
+export function migrateTrack(t) {
+  if (Array.isArray(t)) return { clips: t, mute: false, solo: false, gain: 1, pan: 0 }
+  if (t && typeof t === 'object' && 'clips' in t) {
+    return { mute: false, solo: false, gain: 1, pan: 0, ...t, clips: t.clips || [] }
+  }
+  return makeTrack()
+}
+
 const defaultVoice = () => ({
   loadedPoolId: '',
   tempo: 1,
@@ -16,32 +27,61 @@ const defaultVoice = () => ({
   loopEnd: 1,
   view: 'disk',
   // filter
+  filterActive: true,
   filterType: 'lowpass',
   filterHz: 18000,
   filterQ: 0.7,
   // saturation
+  satActive: true,
   saturation: 0,
   // wow/flutter
+  wowActive: true,
   wowRate: 0,
   wowDepth: 0,
   // ring mod
+  ringActive: true,
   ringFreq: 100,
   ringAmount: 0,
   // flanger
+  flangerActive: true,
   flangerRate: 0.3,
   flangerDepth: 0.4,
   flangerFb: 0.3,
   flangerMix: 0,
   // tremolo
+  tremActive: true,
   tremRate: 4,
   tremDepth: 0,
   // tape delay
+  delayActive: true,
   delayTime: 0.25,
   delayFb: 0.35,
   wet: 0,
   // reverb
+  reverbActive: true,
   reverbSize: 1.5,
   reverbWet: 0,
+  // granulator
+  granActive: false,
+  granSize: 0.08,
+  granDensity: 20,
+  granPos: 0.5,
+  granDrift: 0,
+  granSpray: 0.02,
+  granPitch: 0,
+  granPitchSpread: 0,
+  granGain: 1,
+  granConstQ: false,
+  granCQBands: 16,
+  granCQResonance: 8,
+  // doppler
+  dopplerActive: false,
+  dopplerSpeed: 0.5,
+  dopplerRange: 10,
+  dopplerMinDist: 1,
+  dopplerMix: 1,
+  // modulation
+  modulators: {},
 })
 export const MAX_VOICES = 6
 const defaultSoundState = () => ({
@@ -57,8 +97,9 @@ export function StateProvider({ children }) {
   const buffersRef = useRef(new Map())
   const [pool, setPool] = useState([])
   const [objects, setObjects] = useState([])
-  const [timeline, setTimeline] = useState({ tracks: [[], [], [], []] })
+  const [timeline, setTimeline] = useState({ tracks: Array.from({ length: 4 }, makeTrack), length: 60 })
   const [highlight, setHighlight] = useState('#00ff9c')
+  const [theme, setTheme] = useState('dark')
   const [soundState, setSoundState] = useState(defaultSoundState)
   const [ui, setUi] = useState(defaultUi)
   const [sessionVersion, setSessionVersion] = useState(0)
@@ -95,6 +136,7 @@ export function StateProvider({ children }) {
     const json = JSON.stringify({
       version: 2,
       highlight,
+      theme,
       pool: poolData,
       objects,
       timeline,
@@ -126,7 +168,23 @@ export function StateProvider({ children }) {
     buffersRef.current = newMap
     setPool(newPool)
     setObjects(data.objects || [])
-    setTimeline(data.timeline || { tracks: [[], [], [], []] })
+    const loadedTimeline = data.timeline || {}
+    const timelineTracks = (loadedTimeline.tracks || Array.from({ length: 4 }, makeTrack)).map(migrateTrack)
+    // heal: clamp clip sourceEnd to actual buffer duration
+    const healed = timelineTracks.map(t => ({
+      ...t,
+      clips: t.clips.map(c => {
+        const buf = newMap.get(c.poolId)
+        if (!buf) return c
+        const ss = Math.max(0, Math.min(buf.duration, c.sourceStart || 0))
+        const se = Math.max(ss, Math.min(buf.duration, c.sourceEnd ?? buf.duration))
+        return { ...c, sourceStart: ss, sourceEnd: se }
+      }),
+    }))
+    setTimeline({
+      tracks: healed,
+      length: loadedTimeline.length || 60,
+    })
     setHighlight(data.highlight || '#00ff9c')
     // merge loaded voices with defaults so missing fields fall back
     const loadedSound = data.soundState || defaultSoundState()
