@@ -150,7 +150,7 @@ export function StateProvider({ children }) {
     a.download = `concrete_${new Date().toISOString().replace(/[:.]/g, '-')}.json`
     a.click()
     URL.revokeObjectURL(url)
-  }, [pool, objects, timeline, highlight, soundState, ui])
+  }, [pool, objects, timeline, highlight, theme, soundState, ui])
 
   const loadSession = useCallback(async (file) => {
     const text = await file.text()
@@ -186,6 +186,7 @@ export function StateProvider({ children }) {
       length: loadedTimeline.length || 60,
     })
     setHighlight(data.highlight || '#00ff9c')
+    setTheme(data.theme === 'light' ? 'light' : 'dark')
     // merge loaded voices with defaults so missing fields fall back
     const loadedSound = data.soundState || defaultSoundState()
     const merged = {
@@ -208,6 +209,7 @@ export function StateProvider({ children }) {
     objects, setObjects,
     timeline, setTimeline,
     highlight, setHighlight,
+    theme, setTheme,
     soundState, setSoundState,
     ui, setUi,
     sessionVersion,

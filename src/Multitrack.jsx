@@ -1,5 +1,6 @@
 import { useRef, useEffect, useCallback } from 'react'
 import { useStore } from './state'
+import { themeColor } from './audio'
 
 const HEADER_WIDTH = 140
 
@@ -164,7 +165,7 @@ function Track({ index, track, label, pxPerSec, clipsWidth, trackHeight, selecte
 }
 
 function Clip({ clip, pxPerSec, trackHeight, trackIndex, selected, onSelect, updateTracks }) {
-  const { getBuffer, pool } = useStore()
+  const { getBuffer, pool, theme } = useStore()
   const buf = getBuffer(clip.poolId)
   const wanted = Math.max(0.01, clip.sourceEnd - clip.sourceStart)
   const available = buf ? Math.max(0.01, buf.duration - clip.sourceStart) : wanted
@@ -186,7 +187,7 @@ function Clip({ clip, pxPerSec, trackHeight, trackIndex, selected, onSelect, upd
     const h = Math.max(1, Math.floor(innerHeight))
     c.width = w; c.height = h
     ctx.clearRect(0, 0, w, h)
-    ctx.strokeStyle = '#00ff9c'
+    ctx.strokeStyle = themeColor('clip-wave', '#00ff9c')
     ctx.lineWidth = 1
     const data = b.getChannelData(0)
     const startI = Math.floor(clip.sourceStart * b.sampleRate)
@@ -209,7 +210,7 @@ function Clip({ clip, pxPerSec, trackHeight, trackIndex, selected, onSelect, upd
       ctx.lineTo(x + 0.5, y2)
       ctx.stroke()
     }
-  }, [clip.poolId, clip.sourceStart, clip.sourceEnd, width, innerHeight, getBuffer, len])
+  }, [clip.poolId, clip.sourceStart, clip.sourceEnd, width, innerHeight, getBuffer, len, theme])
 
   const startDrag = (e, mode) => {
     e.stopPropagation()

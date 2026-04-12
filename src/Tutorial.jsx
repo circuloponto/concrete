@@ -219,7 +219,7 @@ export function Tutorial({ open, onClose, currentTab, onSwitchTab }) {
             )}
           </mask>
         </defs>
-        <rect width="100%" height="100%" fill="rgba(0,0,0,0.78)" mask="url(#tutorial-cutout)" />
+        <rect width="100%" height="100%" fill="var(--scrim)" mask="url(#tutorial-cutout)" />
       </svg>
       {hl && (
         <div

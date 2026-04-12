@@ -1,8 +1,9 @@
 import { useRef, useEffect } from 'react'
 import { useStore } from './state'
+import { themeColor } from './audio'
 
 export function Disk({ buffer, position, playing, onScrub, size = 280 }) {
-  const { highlight } = useStore()
+  const { highlight, theme } = useStore()
   const canvasRef = useRef(null)
   const draggingRef = useRef(false)
   const lastAngleRef = useRef(0)
@@ -26,7 +27,7 @@ export function Disk({ buffer, position, playing, onScrub, size = 280 }) {
       const rOuter = Math.min(w, h) / 2 - 10
       const rInner = rOuter * 0.35
       // background disk
-      ctx.fillStyle = '#050505'
+      ctx.fillStyle = themeColor('panel-bg', '#050505')
       ctx.beginPath(); ctx.arc(cx, cy, rOuter, 0, Math.PI * 2); ctx.fill()
       // waveform ring around circumference
       if (buffer) {
@@ -68,7 +69,7 @@ export function Disk({ buffer, position, playing, onScrub, size = 280 }) {
       ctx.arc(cx + Math.cos(pa) * (rOuter - 4), cy + Math.sin(pa) * (rOuter - 4), 4, 0, Math.PI * 2)
       ctx.fill()
       // center hub
-      ctx.fillStyle = '#000'
+      ctx.fillStyle = themeColor('bg', '#000')
       ctx.beginPath(); ctx.arc(cx, cy, rInner - 2, 0, Math.PI * 2); ctx.fill()
       ctx.strokeStyle = highlight
       ctx.beginPath(); ctx.arc(cx, cy, rInner - 2, 0, Math.PI * 2); ctx.stroke()
@@ -78,7 +79,7 @@ export function Disk({ buffer, position, playing, onScrub, size = 280 }) {
     }
     draw()
     return () => cancelAnimationFrame(raf)
-  }, [buffer, highlight, playing])
+  }, [buffer, highlight, playing, theme])
 
   const getAngle = (e) => {
     const rect = canvasRef.current.getBoundingClientRect()

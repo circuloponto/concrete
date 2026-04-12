@@ -4,10 +4,33 @@
   --fg: #ddd;
   --dim: #555;
   --panel: #0a0a0a;
+  --panel-bg: #050505;
+  --track-bg: #060606;
+  --track-hdr: #040404;
   --border: #1a1a1a;
+  --hl-wash: rgba(0,255,156,0.08);
+  --hl-wash-strong: rgba(0,255,156,0.13);
+  --scrim: rgba(0,0,0,0.78);
+  --clip-wave: #00ff9c;
   font-family: 'IBM Plex Mono', 'Courier New', monospace;
   font-size: 13px;
   color-scheme: dark;
+}
+
+:root.theme-light {
+  --bg: #f2eee1;
+  --fg: #1c1b15;
+  --dim: #8a8576;
+  --panel: #ebe6d2;
+  --panel-bg: #e8e3cf;
+  --track-bg: #ece7d3;
+  --track-hdr: #e3ddc7;
+  --border: #d2cdb8;
+  --hl-wash: rgba(20,140,90,0.12);
+  --hl-wash-strong: rgba(20,140,90,0.22);
+  --scrim: rgba(30,28,18,0.72);
+  --clip-wave: #1c1b15;
+  color-scheme: light;
 }
 
 * { box-sizing: border-box; }
@@ -172,7 +195,7 @@ input[type="color"] { padding: 0; width: 28px; height: 22px; border: 1px solid v
   user-select: none;
 }
 .pool-item:hover { border-color: var(--hl); }
-.pool-item.selected { border-color: var(--hl); background: rgba(0,255,156,0.08); }
+.pool-item.selected { border-color: var(--hl); background: var(--hl-wash); }
 .pool-item .name { font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .pool-item .meta { font-size: 10px; color: var(--dim); display: flex; justify-content: space-between; }
 .pool-item .kind-sound { color: #88f; }
@@ -448,7 +471,7 @@ input[type="color"] { padding: 0; width: 28px; height: 22px; border: 1px solid v
 }
 .multitrack .ruler {
   height: 18px;
-  background: #050505;
+  background: var(--panel-bg);
   border-bottom: 1px solid var(--border);
   position: relative;
   font-size: 9px;
@@ -466,7 +489,7 @@ input[type="color"] { padding: 0; width: 28px; height: 22px; border: 1px solid v
   height: 48px;
   display: flex;
   border-bottom: 1px solid var(--border);
-  background: #060606;
+  background: var(--track-bg);
 }
 .track-row:last-child { border-bottom: none; }
 .track-header {
@@ -477,7 +500,7 @@ input[type="color"] { padding: 0; width: 28px; height: 22px; border: 1px solid v
   display: flex;
   flex-direction: column;
   gap: 2px;
-  background: #040404;
+  background: var(--track-hdr);
 }
 .track-header-top {
   display: flex;
@@ -531,7 +554,7 @@ input[type="color"] { padding: 0; width: 28px; height: 22px; border: 1px solid v
   position: absolute;
   top: 4px;
   bottom: 4px;
-  background: rgba(0,255,156,0.13);
+  background: var(--hl-wash-strong);
   border: 1px solid var(--hl);
   color: var(--hl);
   font-size: 10px;
@@ -541,7 +564,7 @@ input[type="color"] { padding: 0; width: 28px; height: 22px; border: 1px solid v
   align-items: center;
   padding: 0 8px;
 }
-.clip.selected { background: rgba(0,255,156,0.28); }
+.clip.selected { background: var(--hl-wash-strong); filter: brightness(1.2); }
 .clip .handle {
   position: absolute;
   top: 0;
@@ -577,7 +600,7 @@ input[type="color"] { padding: 0; width: 28px; height: 22px; border: 1px solid v
   border-radius: 50%;
   cursor: grab;
   z-index: 3;
-  box-shadow: 0 0 6px rgba(0,255,156,0.7);
+  box-shadow: 0 0 6px var(--hl);
   touch-action: none;
 }
 .clip .fade-handle:hover { background: var(--hl); transform: scale(1.15); }
@@ -671,7 +694,7 @@ input[type="color"] { padding: 0; width: 28px; height: 22px; border: 1px solid v
 .drop-overlay {
   position: fixed;
   inset: 0;
-  background: rgba(0,0,0,0.85);
+  background: var(--scrim);
   z-index: 9998;
   display: flex;
   align-items: center;
@@ -688,7 +711,7 @@ input[type="color"] { padding: 0; width: 28px; height: 22px; border: 1px solid v
   padding: 60px 80px;
   text-align: center;
   color: var(--hl);
-  background: rgba(0,255,156,0.04);
+  background: var(--hl-wash);
   box-shadow: 0 0 60px rgba(0,255,156,0.25), inset 0 0 40px rgba(0,255,156,0.08);
 }
 .drop-overlay .drop-icon {
@@ -752,7 +775,7 @@ input[type="color"] { padding: 0; width: 28px; height: 22px; border: 1px solid v
 .tutorial-popover {
   position: absolute;
   width: 360px;
-  background: #050505;
+  background: var(--panel-bg);
   border: 1px solid var(--hl);
   padding: 16px 18px 14px 18px;
   box-shadow: 0 12px 48px rgba(0,0,0,0.8), 0 0 24px rgba(0,255,156,0.18);

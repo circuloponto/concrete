@@ -12,7 +12,7 @@ const AUDIO_RX = /\.(wav|mp3|aiff?|ogg|flac|m4a|webm)$/i
 
 function Shell() {
   const {
-    highlight, setHighlight, ui, setUi, sessionVersion,
+    highlight, setHighlight, theme, setTheme, ui, setUi, sessionVersion,
     addPoolItem, getAudioCtx,
   } = useStore()
   const tab = ui.tab
@@ -26,6 +26,12 @@ function Shell() {
   useEffect(() => {
     document.documentElement.style.setProperty('--hl', highlight)
   }, [highlight])
+
+  useEffect(() => {
+    const root = document.documentElement
+    if (theme === 'light') root.classList.add('theme-light')
+    else root.classList.remove('theme-light')
+  }, [theme])
 
   // first-visit auto-launch
   useEffect(() => {
@@ -97,6 +103,11 @@ function Shell() {
           <button className={tab === 'timeline' ? 'active' : ''} onClick={() => setTab('timeline')}>Timeline</button>
         </div>
         <div className="spacer" />
+        <button
+          className="help-btn"
+          onClick={() => setTheme(theme === 'light' ? 'dark' : 'light')}
+          title={theme === 'light' ? 'switch to dark' : 'switch to light'}
+        >{theme === 'light' ? '☾' : '☼'}</button>
         <button
           className="help-btn"
           data-tutorial="help"

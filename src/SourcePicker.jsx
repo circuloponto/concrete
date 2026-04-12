@@ -1,11 +1,11 @@
 import { useRef, useState, useEffect } from 'react'
 import { useStore } from './state'
-import { reverseBuffer } from './audio'
+import { reverseBuffer, themeColor } from './audio'
 
 // Waveform view with draggable region selection, scrub playback, and a
 // commit-on-send action that slices the source into a new pool item.
 export function SourcePicker({ onSend, tracks }) {
-  const { pool, getBuffer, getAudioCtx, addPoolItem, highlight } = useStore()
+  const { pool, getBuffer, getAudioCtx, addPoolItem, highlight, theme } = useStore()
   const [poolId, setPoolId] = useState('')
   const [region, setRegion] = useState({ start: 0, end: 0 })
   const [targetTrack, setTargetTrack] = useState(0)
@@ -37,7 +37,7 @@ export function SourcePicker({ onSend, tracks }) {
     const h = c.height
     const ctx = c.getContext('2d')
     ctx.clearRect(0, 0, w, h)
-    ctx.fillStyle = '#050505'
+    ctx.fillStyle = themeColor('panel-bg', '#050505')
     ctx.fillRect(0, 0, w, h)
     ctx.strokeStyle = highlight + '22'
     ctx.beginPath(); ctx.moveTo(0, h / 2); ctx.lineTo(w, h / 2); ctx.stroke()
@@ -87,7 +87,7 @@ export function SourcePicker({ onSend, tracks }) {
       ctx.lineWidth = 1
       ctx.beginPath(); ctx.moveTo(px + 0.5, 0); ctx.lineTo(px + 0.5, h); ctx.stroke()
     }
-  }, [buffer, region, duration, highlight, playing, progress, scrubPos])
+  }, [buffer, region, duration, highlight, playing, progress, scrubPos, theme])
 
   const xToTime = (clientX) => {
     const rect = canvasRef.current.getBoundingClientRect()

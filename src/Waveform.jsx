@@ -1,8 +1,9 @@
 import { useRef, useEffect } from 'react'
 import { useStore } from './state'
+import { themeColor } from './audio'
 
 export function Waveform({ buffer, position, playing, onScrub, width = 640, height = 160 }) {
-  const { highlight } = useStore()
+  const { highlight, theme } = useStore()
   const canvasRef = useRef(null)
   const posRef = useRef(position)
   const draggingRef = useRef(false)
@@ -15,7 +16,7 @@ export function Waveform({ buffer, position, playing, onScrub, width = 640, heig
     // draw waveform once per buffer/width change; playhead is overlaid per frame
     const drawStatic = () => {
       ctx.clearRect(0, 0, width, height)
-      ctx.fillStyle = '#050505'
+      ctx.fillStyle = themeColor('panel-bg', '#050505')
       ctx.fillRect(0, 0, width, height)
       ctx.strokeStyle = highlight + '33'
       ctx.beginPath()
@@ -66,7 +67,7 @@ export function Waveform({ buffer, position, playing, onScrub, width = 640, heig
     }
     draw()
     return () => cancelAnimationFrame(raf)
-  }, [buffer, width, height, highlight])
+  }, [buffer, width, height, highlight, theme])
 
   const getPos = (e) => {
     const rect = canvasRef.current.getBoundingClientRect()
