@@ -152,6 +152,10 @@ export function StateProvider({ children }) {
     setPool(p => p.filter(i => i.id !== id))
   }, [])
 
+  const setPoolItemTypo = useCallback((id, typo) => {
+    setPool(p => p.map(item => item.id === id ? { ...item, typo } : item))
+  }, [])
+
   const getBuffer = useCallback((id) => buffersRef.current.get(id), [])
 
   const saveSession = useCallback(() => {
@@ -235,7 +239,7 @@ export function StateProvider({ children }) {
 
   const value = {
     getAudioCtx,
-    pool, addPoolItem, removePoolItem, getBuffer,
+    pool, addPoolItem, removePoolItem, setPoolItemTypo, getBuffer,
     objects, setObjects,
     timeline, setTimeline,
     highlight, setHighlight,

@@ -727,7 +727,11 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
     if (!nodesRef.current) return
     nodesRef.current.reverbWetGain.gain.value = reverbActive ? reverbWet : 0
   }, [reverbWet, reverbActive])
-  useEffect(() => { if (nodesRef.current) nodesRef.current.granBus.gain.value = granGain }, [granGain])
+  useEffect(() => {
+    if (!nodesRef.current) return
+    nodesRef.current.granBus.gain.value = granGain
+    if (nodesRef.current.granDry) nodesRef.current.granDry.gain.value = granActive ? 0 : 1
+  }, [granGain, granActive])
   // freeze: wet/dry crossfade inside the freeze module
   useEffect(() => {
     if (!nodesRef.current) return

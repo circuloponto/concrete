@@ -141,9 +141,119 @@ input[type="color"] { padding: 0; width: 28px; height: 22px; border: 1px solid v
   color: var(--hl);
   border-bottom: 1px solid var(--border);
 }
+.tartyp-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  padding: 6px 10px;
+  font-size: 10px;
+  border: none;
+  border-bottom: 1px solid var(--border);
+  background: transparent;
+  color: var(--dim);
+  cursor: pointer;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  font-family: inherit;
+}
+.tartyp-toggle:hover { color: var(--fg); }
+.typo-filter-badge {
+  font-size: 9px;
+  color: var(--hl);
+  border: 1px solid var(--hl);
+  padding: 1px 4px;
+}
+.tartyp-section {
+  border-bottom: 1px solid var(--border);
+}
+
+.tartyp-grid {
+  display: grid;
+  grid-template-columns: 56px 1fr 1fr 1fr;
+  gap: 1px;
+  padding: 6px;
+}
+.tartyp-corner {
+  font-size: 7px;
+  color: var(--dim);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  display: flex;
+  align-items: flex-end;
+  padding-bottom: 2px;
+}
+.tartyp-col-header {
+  font-size: 8px;
+  color: var(--dim);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  text-align: center;
+  padding: 3px 0;
+}
+.tartyp-row-header {
+  font-size: 8px;
+  color: var(--dim);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  display: flex;
+  align-items: center;
+  padding-right: 4px;
+}
+.tartyp-cell {
+  border: 1px solid var(--border);
+  padding: 6px 4px;
+  text-align: center;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  min-height: 36px;
+  justify-content: center;
+}
+.tartyp-cell:hover { border-color: var(--hl); }
+.tartyp-cell.active { border-color: var(--hl); background: var(--hl-wash); }
+.tartyp-code {
+  font-size: 10px;
+  font-weight: bold;
+  color: var(--fg);
+  letter-spacing: 0.5px;
+}
+.tartyp-cell.active .tartyp-code { color: var(--hl); }
+.tartyp-count {
+  font-size: 8px;
+  color: var(--hl);
+  padding: 0 4px;
+  border: 1px solid var(--hl);
+}
+.typo-clear {
+  display: block;
+  width: 100%;
+  padding: 4px;
+  font-size: 9px;
+  border: none;
+  border-bottom: 1px solid var(--border);
+  background: var(--hl-wash);
+  color: var(--hl);
+  cursor: pointer;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  font-family: inherit;
+}
+.typo-clear:hover { background: var(--hl-wash-strong); }
+
+.typo-tag {
+  font-size: 9px;
+  color: var(--hl);
+  padding: 0 3px;
+  border: 1px solid var(--hl);
+  letter-spacing: 0.3px;
+}
+
 .pool-tabs {
   display: grid;
-  grid-template-columns: 1fr 1fr 1fr;
+  grid-template-columns: repeat(3, 1fr);
   gap: 1px;
   padding: 6px;
   border-bottom: 1px solid var(--border);
@@ -151,15 +261,18 @@ input[type="color"] { padding: 0; width: 28px; height: 22px; border: 1px solid v
 .pool-tabs button {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  padding: 5px 8px;
+  justify-content: center;
+  gap: 3px;
+  padding: 6px 2px;
   font-size: 10px;
-  letter-spacing: 0.5px;
+  letter-spacing: 0.3px;
   border: 1px solid var(--border);
   background: transparent;
   color: var(--dim);
   text-transform: uppercase;
   cursor: pointer;
+  overflow: hidden;
+  white-space: nowrap;
 }
 .pool-tabs button:hover { color: var(--fg); }
 .pool-tabs button.active {
