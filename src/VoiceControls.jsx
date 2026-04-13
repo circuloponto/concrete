@@ -1,4 +1,4 @@
-import { useRef, useState, useEffect } from 'react'
+import React, { useRef, useState, useEffect } from 'react'
 import { DEFAULT_MOD } from './modulation'
 import { useStore } from './state'
 import { themeColor } from './audio'
@@ -68,6 +68,47 @@ function FreezeXY({ voice }) {
       onPointerUp={() => { dragging.current = false }}
       onPointerCancel={() => { dragging.current = false }}
     />
+  )
+}
+
+const EFFECT_LABELS = {
+  saturation: 'Saturation', wow: 'Wow/Flutter', filter: 'Filter', ringmod: 'Ring Mod', tremolo: 'Tremolo',
+  flanger: 'Flanger', delay: 'Tape Delay', reverb: 'Reverb', granulator: 'Granulator', freeze: 'Freeze',
+  doppler: 'Doppler', autopan: 'Auto Pan',
+}
+
+function ChainOrder({ voice }) {
+  const dragIdx = useRef(null)
+  const order = voice.effectOrder || []
+  const onDragStart = (e, i) => { dragIdx.current = i; e.dataTransfer.effectAllowed = 'move' }
+  const onDragOver = (e) => e.preventDefault()
+  const onDrop = (e, i) => {
+    e.preventDefault()
+    const from = dragIdx.current
+    if (from === null || from === i) return
+    const newOrder = [...order]
+    const [item] = newOrder.splice(from, 1)
+    newOrder.splice(i, 0, item)
+    voice.setEffectOrder(newOrder)
+    dragIdx.current = null
+  }
+  return (
+    <div className="chain-order">
+      <span className="chain-label">chain</span>
+      {order.map((name, i) => (
+        <React.Fragment key={name}>
+          {i > 0 && <span className="chain-arrow">→</span>}
+          <div
+            className="chain-item"
+            draggable
+            onDragStart={(e) => onDragStart(e, i)}
+            onDragOver={onDragOver}
+            onDrop={(e) => onDrop(e, i)}
+            title={`${name} — drag to reorder`}
+          >{EFFECT_LABELS[name] || name}</div>
+        </React.Fragment>
+      ))}
+    </div>
   )
 }
 
@@ -228,6 +269,7 @@ export function VoiceControls({ voice }) {
 
   return (
     <div className="voice-controls">
+      <ChainOrder voice={v} />
       <div className="voice-controls-header">
         <span>editing <b>Voice {v.voiceNumber}</b></span>
         <div className="sub-tabs" data-tutorial="sub-tabs">

@@ -27,44 +27,44 @@ const defaultVoice = () => ({
   loopEnd: 1,
   view: 'disk',
   // filter
-  filterActive: true,
+  filterActive: false,
   filterType: 'lowpass',
   filterHz: 18000,
   filterQ: 0.7,
   // saturation
-  satActive: true,
+  satActive: false,
   saturation: 0,
   // wow/flutter
-  wowActive: true,
+  wowActive: false,
   wowRate: 0,
   wowDepth: 0,
   // ring mod
-  ringActive: true,
+  ringActive: false,
   ringFreq: 100,
   ringAmount: 0,
   // flanger
-  flangerActive: true,
+  flangerActive: false,
   flangerRate: 0.3,
   flangerDepth: 0.4,
   flangerFb: 0.3,
   flangerMix: 0,
   // tremolo
-  tremActive: true,
+  tremActive: false,
   tremRate: 4,
   tremDepth: 0,
   // auto pan
-  panActive: true,
+  panActive: false,
   panRate: 0.6,
   panDepth: 0,
   panCenter: 0,
   panWave: 'sine',
   // tape delay
-  delayActive: true,
+  delayActive: false,
   delayTime: 0.25,
   delayFb: 0.35,
   wet: 0,
   // reverb
-  reverbActive: true,
+  reverbActive: false,
   reverbSize: 1.5,
   reverbWet: 0,
   reverbIRPoolId: '',
@@ -96,6 +96,8 @@ const defaultVoice = () => ({
   freezePitch: 0,
   freezeVoices: 4,
   freezePhase: 0.5,
+  // effect chain order (all modules are serial, each with internal wet/dry)
+  effectOrder: ['saturation', 'wow', 'filter', 'ringmod', 'tremolo', 'flanger', 'delay', 'reverb', 'granulator', 'freeze', 'doppler', 'autopan'],
   // modulation
   modulators: {},
 })

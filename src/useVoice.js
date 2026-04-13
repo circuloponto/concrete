@@ -104,6 +104,13 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
   const [freezeVoices, setFreezeVoices] = useState(initial.freezeVoices ?? 4)
   const [freezePhase, setFreezePhase] = useState(initial.freezePhase ?? 0.5)
 
+  // effect chain order
+  const [effectOrder, setEffectOrder] = useState(initial.effectOrder ?? [
+    'saturation', 'wow', 'filter', 'ringmod', 'tremolo', 'flanger', 'delay', 'reverb', 'freeze', 'doppler', 'autopan',
+  ])
+  const effectOrderRef = useRef(effectOrder)
+  effectOrderRef.current = effectOrder
+
   // modulators: key → { enabled, wave, rate, depth }
   const [modulators, setModulators] = useState(initial.modulators ?? {})
   const setModulator = useCallback((key, patch) => {
@@ -390,170 +397,160 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
     const ctx = getAudioCtx()
     const oscs = []
     const mkOsc = (freq, type = 'sine') => {
-      const o = ctx.createOscillator()
-      o.type = type
-      o.frequency.value = freq
-      o.start()
-      oscs.push(o)
-      return o
+      const o = ctx.createOscillator(); o.type = type; o.frequency.value = freq; o.start(); oscs.push(o); return o
     }
+    const G = (v = 1) => { const g = ctx.createGain(); g.gain.value = v; return g }
 
-    // inputs
-    const scrubBus = ctx.createGain(); scrubBus.gain.value = 1
-    const shifterBus = ctx.createGain(); shifterBus.gain.value = 1
-    // granulator bus (grains enter here; when constQ on, grains route through the bank)
-    const granBus = ctx.createGain(); granBus.gain.value = granGain
-    // constant-Q filterbank (cochlea-style log-spaced bandpasses)
-    const cqIn = ctx.createGain(); cqIn.gain.value = 1
-    const cqOut = ctx.createGain(); cqOut.gain.value = 1
-    const cqFilters = []
-    const NBANDS = 24
-    const FMIN = 60, FMAX = 10000
-    for (let i = 0; i < NBANDS; i++) {
-      const f = ctx.createBiquadFilter()
-      f.type = 'bandpass'
-      f.frequency.value = FMIN * Math.pow(FMAX / FMIN, i / (NBANDS - 1))
-      f.Q.value = 8
-      // equal-loudness-ish weighting (emphasize 1-5kHz where ear is most sensitive)
-      const bandGain = ctx.createGain()
-      const fHz = f.frequency.value
-      const weight = 0.5 + Math.exp(-Math.pow(Math.log(fHz / 2500), 2) / 2) * 1.2
-      bandGain.gain.value = weight / NBANDS * 6
-      cqIn.connect(f).connect(bandGain).connect(cqOut)
-      cqFilters.push({ filter: f, gain: bandGain })
+    // ---- Source buses + granulator CQ bank (always first) ----
+    const scrubBus = G(1), shifterBus = G(1)
+    const cqIn = G(1), cqOut = G(1), cqFilters = []
+    for (let i = 0; i < 24; i++) {
+      const f = ctx.createBiquadFilter(); f.type = 'bandpass'
+      f.frequency.value = 60 * Math.pow(10000 / 60, i / 23); f.Q.value = 8
+      const bg = G(((0.5 + Math.exp(-Math.pow(Math.log(f.frequency.value / 2500), 2) / 2) * 1.2) / 24) * 6)
+      cqIn.connect(f).connect(bg).connect(cqOut); cqFilters.push({ filter: f, gain: bg })
     }
-    cqOut.connect(granBus)
+    const master = G(voiceGain)
 
-    // saturation
-    const sat = ctx.createWaveShaper()
-    sat.curve = makeSaturationCurve(saturation)
-    sat.oversample = '2x'
+    // ---- Build each effect as a self-contained module {input, output, ...nodes} ----
+    const modules = {}
 
-    // wow/flutter: a short base delay modulated by an LFO
-    const wowDelay = ctx.createDelay(0.05)
-    wowDelay.delayTime.value = 0.008
-    const wowLfo = mkOsc(wowRate || 0.01, 'sine')
-    const wowDepthGain = ctx.createGain()
-    wowDepthGain.gain.value = wowDepth * 0.005
-    wowLfo.connect(wowDepthGain).connect(wowDelay.delayTime)
+    // Saturation
+    { const input = G(), output = G(), sat = ctx.createWaveShaper()
+      sat.curve = makeSaturationCurve(saturation); sat.oversample = '2x'
+      input.connect(sat).connect(output)
+      modules.saturation = { input, output, sat } }
 
-    // multimode filter
-    const filter = ctx.createBiquadFilter()
-    filter.type = filterType
-    filter.frequency.value = filterHz
-    filter.Q.value = filterQ
+    // Wow/Flutter
+    { const input = G(), output = G()
+      const wowDelay = ctx.createDelay(0.05); wowDelay.delayTime.value = 0.008
+      const wowLfo = mkOsc(wowRate || 0.01, 'sine')
+      const wowDepthGain = G(wowDepth * 0.005)
+      wowLfo.connect(wowDepthGain).connect(wowDelay.delayTime)
+      input.connect(wowDelay).connect(output)
+      modules.wow = { input, output, wowDelay, wowLfo, wowDepthGain } }
 
-    // ring modulator: dry path + wet path where wet gain is driven by osc
-    const ringDry = ctx.createGain(); ringDry.gain.value = 1 - ringAmount
-    const ringWet = ctx.createGain(); ringWet.gain.value = 0
-    const ringMix = ctx.createGain(); ringMix.gain.value = ringAmount
-    const ringOsc = mkOsc(ringFreq, 'sine')
-    const ringDepth = ctx.createGain(); ringDepth.gain.value = 1
-    ringOsc.connect(ringDepth).connect(ringWet.gain)
+    // Filter
+    { const input = G(), output = G()
+      const filter = ctx.createBiquadFilter()
+      filter.type = filterActive ? filterType : 'allpass'; filter.frequency.value = filterHz; filter.Q.value = filterQ
+      input.connect(filter).connect(output)
+      modules.filter = { input, output, filter } }
 
-    // ring mod sum
-    const ringSum = ctx.createGain(); ringSum.gain.value = 1
+    // Ring Modulator
+    { const input = G(), output = G()
+      const ringDry = G(1 - ringAmount), ringWet = G(0), ringMix = G(ringAmount)
+      const ringOsc = mkOsc(ringFreq, 'sine'), ringDepth = G(1)
+      ringOsc.connect(ringDepth).connect(ringWet.gain)
+      input.connect(ringDry).connect(output)
+      input.connect(ringWet).connect(ringMix).connect(output)
+      modules.ringmod = { input, output, ringDry, ringWet, ringMix, ringOsc, ringDepth } }
 
-    // tremolo (amplitude LFO)
-    const tremoloGain = ctx.createGain()
-    tremoloGain.gain.value = 1 - tremDepth / 2
-    const tremoloLfo = mkOsc(Math.max(0.01, tremRate), 'sine')
-    const tremoloDepthGain = ctx.createGain()
-    tremoloDepthGain.gain.value = tremDepth / 2
-    tremoloLfo.connect(tremoloDepthGain).connect(tremoloGain.gain)
+    // Tremolo
+    { const input = G(), output = G()
+      const tremoloGain = G(1 - tremDepth / 2)
+      const tremoloLfo = mkOsc(Math.max(0.01, tremRate), 'sine')
+      const tremoloDepthGain = G(tremDepth / 2)
+      tremoloLfo.connect(tremoloDepthGain).connect(tremoloGain.gain)
+      input.connect(tremoloGain).connect(output)
+      modules.tremolo = { input, output, tremoloGain, tremoloLfo, tremoloDepthGain } }
 
-    // flanger
-    const flangerDelay = ctx.createDelay(0.05)
-    flangerDelay.delayTime.value = 0.002
-    const flangerLfo = mkOsc(flangerRate, 'sine')
-    const flangerDepthGain = ctx.createGain()
-    flangerDepthGain.gain.value = flangerDepth * 0.002
-    flangerLfo.connect(flangerDepthGain).connect(flangerDelay.delayTime)
-    const flangerFbGain = ctx.createGain(); flangerFbGain.gain.value = flangerFb
-    const flangerMixGain = ctx.createGain(); flangerMixGain.gain.value = flangerMix
+    // Flanger (internal wet/dry)
+    { const input = G(), output = G(), flangerDry = G(1)
+      const flangerDelay = ctx.createDelay(0.05); flangerDelay.delayTime.value = 0.002
+      const flangerLfo = mkOsc(flangerRate, 'sine'), flangerDepthGain = G(flangerDepth * 0.002)
+      flangerLfo.connect(flangerDepthGain).connect(flangerDelay.delayTime)
+      const flangerFbGain = G(flangerFb), flangerMixGain = G(flangerMix)
+      input.connect(flangerDry).connect(output)
+      input.connect(flangerDelay); flangerDelay.connect(flangerFbGain).connect(flangerDelay)
+      flangerDelay.connect(flangerMixGain).connect(output)
+      modules.flanger = { input, output, flangerDry, flangerDelay, flangerLfo, flangerDepthGain, flangerFbGain, flangerMixGain } }
 
-    // tape delay
-    const tapeDelay = ctx.createDelay(2)
-    tapeDelay.delayTime.value = delayTime
-    const tapeFbGain = ctx.createGain(); tapeFbGain.gain.value = delayFb
-    const tapeWetGain = ctx.createGain(); tapeWetGain.gain.value = wet
+    // Tape Delay (internal wet/dry)
+    { const input = G(), output = G(), delayDry = G(1)
+      const tapeDelay = ctx.createDelay(2); tapeDelay.delayTime.value = delayTime
+      const tapeFbGain = G(delayFb), tapeWetGain = G(wet)
+      input.connect(delayDry).connect(output)
+      input.connect(tapeDelay); tapeDelay.connect(tapeFbGain).connect(tapeDelay)
+      tapeDelay.connect(tapeWetGain).connect(output)
+      modules.delay = { input, output, delayDry, tapeDelay, tapeFbGain, tapeWetGain } }
 
-    // reverb
-    const reverb = ctx.createConvolver()
-    reverb.buffer = makeReverbIR(ctx, reverbSize)
-    const reverbWetGain = ctx.createGain(); reverbWetGain.gain.value = reverbWet
+    // Reverb (internal wet/dry)
+    { const input = G(), output = G(), reverbDry = G(1)
+      const reverb = ctx.createConvolver(); reverb.buffer = makeReverbIR(ctx, reverbSize)
+      const reverbWetGain = G(reverbWet)
+      input.connect(reverbDry).connect(output)
+      input.connect(reverb).connect(reverbWetGain).connect(output)
+      modules.reverb = { input, output, reverbDry, reverb, reverbWetGain } }
 
-    // dry path
-    // spectral freeze — grains read from the voice's buffer at posA/posB
-    const freezeMixGain = ctx.createGain()
-    freezeMixGain.gain.value = freezeActive ? freezeMix : 0
+    // Granulator (injects grains; when active, can duck input)
+    { const input = G(), output = G()
+      const granDry = G(1)
+      const granMix = G(granGain)
+      input.connect(granDry).connect(output)
+      granMix.connect(output)
+      // CQ filterbank feeds into granMix
+      const cqRoute = G(1)
+      cqOut.connect(cqRoute).connect(granMix)
+      modules.granulator = { input, output, granDry, granMix, granBus: granMix, cqRoute } }
 
-    const dry = ctx.createGain(); dry.gain.value = 1
+    // Freeze (ducks input via mix, adds own grains)
+    { const input = G(), output = G()
+      const freezeDry = G(freezeActive ? (1 - freezeMix) : 1)
+      const freezeMixGain = G(freezeActive ? freezeMix : 0)
+      input.connect(freezeDry).connect(output)
+      freezeMixGain.connect(output)
+      modules.freeze = { input, output, freezeDry, freezeMixGain } }
 
-    // doppler — serial delay + gain between FX sum and master
-    const dopplerIn = ctx.createGain(); dopplerIn.gain.value = 1
-    const dopplerDelay = ctx.createDelay(0.5)
-    dopplerDelay.delayTime.value = 0
-    const dopplerGain = ctx.createGain(); dopplerGain.gain.value = 1
-    dopplerIn.connect(dopplerDelay).connect(dopplerGain)
+    // Doppler
+    { const input = G(), output = G()
+      const dopplerDelay = ctx.createDelay(0.5); dopplerDelay.delayTime.value = 0
+      const dopplerGain = G(1)
+      input.connect(dopplerDelay).connect(dopplerGain).connect(output)
+      modules.doppler = { input, output, dopplerDelay, dopplerGain } }
 
-    // auto-pan — LFO modulating a StereoPannerNode
-    const validWave = ['sine', 'triangle', 'square', 'sawtooth'].includes(panWave) ? panWave : 'sine'
-    const autoPan = ctx.createStereoPanner()
-    autoPan.pan.value = panCenter
-    const panLfo = mkOsc(Math.max(0.01, panRate), validWave)
-    const panDepthGain = ctx.createGain()
-    panDepthGain.gain.value = panActive ? panDepth : 0
-    panLfo.connect(panDepthGain).connect(autoPan.pan)
+    // Auto Pan
+    { const input = G(), output = G()
+      const validWave = ['sine', 'triangle', 'square', 'sawtooth'].includes(panWave) ? panWave : 'sine'
+      const autoPan = ctx.createStereoPanner(); autoPan.pan.value = panCenter
+      const panLfo = mkOsc(Math.max(0.01, panRate), validWave)
+      const panDepthGain = G(panActive ? panDepth : 0)
+      panLfo.connect(panDepthGain).connect(autoPan.pan)
+      input.connect(autoPan).connect(output)
+      modules.autopan = { input, output, autoPan, panLfo, panDepthGain } }
 
-    const master = ctx.createGain(); master.gain.value = voiceGain
+    // ---- Wire the chain in effectOrder ----
+    const order = effectOrderRef.current
+    const wireChain = () => {
+      // disconnect all module outputs + source buses
+      for (const m of Object.values(modules)) try { m.output.disconnect() } catch {}
+      try { scrubBus.disconnect() } catch {}
+      try { shifterBus.disconnect() } catch {}
+      try { master.disconnect() } catch {}
+      // sources → first module
+      const first = modules[order[0]]
+      scrubBus.connect(first.input); shifterBus.connect(first.input)
+      // chain
+      for (let i = 0; i < order.length - 1; i++) modules[order[i]].output.connect(modules[order[i + 1]].input)
+      // last → master → output
+      modules[order[order.length - 1]].output.connect(master)
+      master.connect(outputNode)
+    }
+    wireChain()
 
-    // Wiring
-    // inputs → saturation
-    scrubBus.connect(sat)
-    shifterBus.connect(sat)
-    granBus.connect(sat)
-    // serial chain
-    sat.connect(wowDelay).connect(filter)
-    // ring mod split
-    filter.connect(ringDry).connect(ringSum)
-    filter.connect(ringWet).connect(ringMix).connect(ringSum)
-    // tremolo in series after ringmod
-    ringSum.connect(tremoloGain)
-    // parallel FX branches → dopplerIn
-    tremoloGain.connect(dry).connect(dopplerIn)
-    tremoloGain.connect(flangerDelay)
-    flangerDelay.connect(flangerFbGain).connect(flangerDelay)
-    flangerDelay.connect(flangerMixGain).connect(dopplerIn)
-    tremoloGain.connect(tapeDelay)
-    tapeDelay.connect(tapeFbGain).connect(tapeDelay)
-    tapeDelay.connect(tapeWetGain).connect(dopplerIn)
-    tremoloGain.connect(reverb)
-    reverb.connect(reverbWetGain).connect(dopplerIn)
-    // freeze output (grains scheduled by timer, connect to dopplerIn)
-    freezeMixGain.connect(dopplerIn)
-    // doppler → autoPan → master → output
-    dopplerGain.connect(autoPan)
-    autoPan.connect(master)
-    master.connect(outputNode)
-
+    // flatten module nodes for backward-compatible access by live update effects
+    const flat = {}
+    for (const mod of Object.values(modules)) {
+      for (const [k, v] of Object.entries(mod)) {
+        if (k !== 'input' && k !== 'output') flat[k] = v
+      }
+    }
     nodesRef.current = {
-      scrubBus, shifterBus, granBus,
+      ...flat,
+      scrubBus, shifterBus,
+      granBus: modules.granulator.granMix,
       cqIn, cqOut, cqFilters,
-      sat,
-      wowDelay, wowLfo, wowDepthGain,
-      filter,
-      ringDry, ringWet, ringMix, ringOsc, ringDepth,
-      ringSum,
-      tremoloGain, tremoloLfo, tremoloDepthGain,
-      flangerDelay, flangerLfo, flangerDepthGain, flangerFbGain, flangerMixGain,
-      tapeDelay, tapeFbGain, tapeWetGain,
-      reverb, reverbWetGain,
-      dopplerIn, dopplerDelay, dopplerGain,
-      autoPan, panLfo, panDepthGain,
-      freezeMixGain,
-      dry, master,
-      oscs,
+      master, oscs, modules, wireChain,
     }
     return nodesRef.current
   }, [getAudioCtx, outputNode])
@@ -576,6 +573,11 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
     if (buffer) ensureEffects()
     return () => { stop(); teardownEffects() }
   }, [buffer, ensureEffects, stop, teardownEffects])
+
+  // rewire chain when effect order changes
+  useEffect(() => {
+    if (nodesRef.current?.wireChain) nodesRef.current.wireChain()
+  }, [effectOrder])
 
   const play = useCallback(() => {
     if (!buffer) return
@@ -621,6 +623,7 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
       granPitch, granPitchSpread, granGain, granConstQ, granCQBands, granCQResonance,
       dopplerActive, dopplerSpeed, dopplerRange, dopplerMinDist, dopplerMix,
       freezeActive, freezePos, freezeGrain, freezeMix, freezeGainVal, freezePitch, freezeVoices, freezePhase,
+      effectOrder,
       modulators,
     })
   }, [onSnapshot,
@@ -638,6 +641,7 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
     granPitch, granPitchSpread, granGain, granConstQ, granCQBands, granCQResonance,
     dopplerActive, dopplerSpeed, dopplerRange, dopplerMinDist, dopplerMix,
     freezeActive, freezePos, freezeGrain, freezeMix, freezeGainVal, freezePitch, freezeVoices, freezePhase,
+    effectOrder,
     modulators,
   ])
 
@@ -724,11 +728,11 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
     nodesRef.current.reverbWetGain.gain.value = reverbActive ? reverbWet : 0
   }, [reverbWet, reverbActive])
   useEffect(() => { if (nodesRef.current) nodesRef.current.granBus.gain.value = granGain }, [granGain])
-  // freeze: wet/dry crossfade — duck the shifter output at the source
+  // freeze: wet/dry crossfade inside the freeze module
   useEffect(() => {
     if (!nodesRef.current) return
     nodesRef.current.freezeMixGain.gain.value = freezeActive ? freezeMix : 0
-    nodesRef.current.shifterBus.gain.value = freezeActive ? (1 - freezeMix) : 1
+    if (nodesRef.current.freezeDry) nodesRef.current.freezeDry.gain.value = freezeActive ? (1 - freezeMix) : 1
   }, [freezeMix, freezeActive])
   useEffect(() => {
     if (!nodesRef.current) return
@@ -902,6 +906,8 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
     freezePitch, setFreezePitch,
     freezeVoices, setFreezeVoices,
     freezePhase, setFreezePhase,
+    // chain order
+    effectOrder, setEffectOrder,
     // modulation
     modulators, setModulator,
     play, stop, onScrub, toggleReverse, loadFromPool,

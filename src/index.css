@@ -285,6 +285,46 @@ input[type="color"] { padding: 0; width: 28px; height: 22px; border: 1px solid v
   border: 1px solid var(--border);
   padding: 12px;
 }
+.chain-order {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+  overflow-x: auto;
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) transparent;
+}
+.chain-order::-webkit-scrollbar { height: 4px; }
+.chain-order::-webkit-scrollbar-thumb { background: var(--border); }
+.chain-label {
+  font-size: 10px;
+  color: var(--dim);
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  margin-right: 8px;
+  flex-shrink: 0;
+}
+.chain-item {
+  font-size: 11px;
+  padding: 5px 10px;
+  border: 1px solid var(--border);
+  color: var(--fg);
+  cursor: grab;
+  letter-spacing: 0.3px;
+  white-space: nowrap;
+  user-select: none;
+  flex-shrink: 0;
+}
+.chain-item:hover { border-color: var(--hl); color: var(--hl); }
+.chain-item:active { cursor: grabbing; opacity: 0.5; }
+.chain-arrow {
+  font-size: 10px;
+  color: var(--dim);
+  flex-shrink: 0;
+  opacity: 0.5;
+}
+
 .voice-controls-header {
   display: flex;
   align-items: center;
