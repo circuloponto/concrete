@@ -1,5 +1,75 @@
-import { useState } from 'react'
+import { useRef, useState, useEffect } from 'react'
 import { DEFAULT_MOD } from './modulation'
+import { useStore } from './state'
+import { themeColor } from './audio'
+
+// XY pad: waveform background, crosshair at (pos, grain), draggable
+function FreezeXY({ voice }) {
+  const { highlight, theme } = useStore()
+  const canvasRef = useRef(null)
+  const dragging = useRef(false)
+  const W = 280, H = 120
+  useEffect(() => {
+    const c = canvasRef.current; if (!c) return
+    const ctx = c.getContext('2d')
+    const bg = themeColor('panel-bg', '#050505')
+    const hl = highlight || '#00ff9c'
+    const dim = themeColor('dim', '#555')
+    let raf
+    const draw = () => {
+      ctx.clearRect(0, 0, W, H); ctx.fillStyle = bg; ctx.fillRect(0, 0, W, H)
+      // waveform
+      if (voice.buffer) {
+        const data = voice.buffer.getChannelData(0)
+        const step = Math.max(1, Math.floor(data.length / W))
+        ctx.strokeStyle = dim + '66'; ctx.lineWidth = 1
+        for (let x = 0; x < W; x++) {
+          let mn = 1, mx = -1; const s = x * step; const e = Math.min(data.length, s + step)
+          for (let i = s; i < e; i++) { const v = data[i]; if (v < mn) mn = v; if (v > mx) mx = v }
+          ctx.beginPath(); ctx.moveTo(x + 0.5, (1 - (mx + 1) / 2) * H); ctx.lineTo(x + 0.5, (1 - (mn + 1) / 2) * H); ctx.stroke()
+        }
+      }
+      // freeze region highlight — width represents grain duration relative to buffer
+      const posX = voice.freezePos * W
+      const dur = voice.buffer ? voice.buffer.duration : 1
+      const grainPx = Math.max(2, (voice.freezeGrain / dur) * W)
+      const grainY = (1 - voice.freezeGrain / 0.5) * H // top = long, bottom = short
+      // selection rectangle
+      ctx.fillStyle = hl + '33'
+      ctx.fillRect(posX, 0, grainPx, H)
+      // borders
+      ctx.strokeStyle = hl; ctx.lineWidth = 1.5
+      ctx.beginPath(); ctx.moveTo(posX, 0); ctx.lineTo(posX, H); ctx.stroke()
+      ctx.beginPath(); ctx.moveTo(posX + grainPx, 0); ctx.lineTo(posX + grainPx, H); ctx.stroke()
+      // horizontal line for grain size
+      ctx.strokeStyle = hl + '88'; ctx.lineWidth = 1
+      ctx.beginPath(); ctx.moveTo(0, grainY); ctx.lineTo(W, grainY); ctx.stroke()
+      // dot
+      ctx.fillStyle = hl; ctx.beginPath(); ctx.arc(posX + grainPx / 2, grainY, 5, 0, Math.PI * 2); ctx.fill()
+      raf = requestAnimationFrame(draw)
+    }
+    draw()
+    return () => cancelAnimationFrame(raf)
+  }, [voice.buffer, voice.freezePos, voice.freezeGrain, highlight, theme])
+  const update = (e) => {
+    const r = canvasRef.current.getBoundingClientRect()
+    const x = Math.max(0, Math.min(1, (e.clientX - r.left) / r.width))
+    // Y: top of pad = 0.5s (big grain), bottom = 0.005s (tiny grain)
+    const normY = 1 - Math.max(0, Math.min(1, (e.clientY - r.top) / r.height))
+    const grain = 0.005 + normY * 0.495 // 5ms..500ms
+    voice.setFreezePos(x)
+    voice.setFreezeGrain(grain)
+  }
+  return (
+    <canvas ref={canvasRef} width={W} height={H}
+      className="freeze-xy"
+      onPointerDown={(e) => { dragging.current = true; e.currentTarget.setPointerCapture(e.pointerId); update(e) }}
+      onPointerMove={(e) => { if (dragging.current) update(e) }}
+      onPointerUp={() => { dragging.current = false }}
+      onPointerCancel={() => { dragging.current = false }}
+    />
+  )
+}
 
 function PanelTitle({ children, active, onToggle }) {
   return (
@@ -97,7 +167,56 @@ function ModRow({ voice, pKey, label, min, max, step, value, onChange, format, u
 }
 
 export function VoiceControls({ voice }) {
+  const { pool } = useStore()
   const [sub, setSub] = useState('tape')
+  const rowRef = useRef(null)
+  const dragRef = useRef({ active: false, startX: 0, startScroll: 0, moved: false, capturedOn: null, pointerId: null })
+
+  const onRowPointerDown = (e) => {
+    const el = rowRef.current
+    if (!el) return
+    if (e.target.closest('button, select, input, canvas')) return
+    dragRef.current = {
+      active: true,
+      startX: e.clientX,
+      startScroll: el.scrollLeft,
+      moved: false,
+      capturedOn: e.currentTarget,
+      pointerId: e.pointerId,
+    }
+  }
+  const onRowPointerMove = (e) => {
+    const d = dragRef.current
+    if (!d.active) return
+    const dx = e.clientX - d.startX
+    if (!d.moved && Math.abs(dx) > 4) {
+      d.moved = true
+      try { d.capturedOn.setPointerCapture(d.pointerId) } catch {}
+    }
+    if (d.moved) {
+      rowRef.current.scrollLeft = d.startScroll - dx
+      e.preventDefault()
+    }
+  }
+  const onRowPointerUp = () => {
+    const d = dragRef.current
+    if (d.moved) { try { d.capturedOn?.releasePointerCapture(d.pointerId) } catch {} }
+    dragRef.current = { active: false, startX: 0, startScroll: 0, moved: false, capturedOn: null, pointerId: null }
+  }
+  const onRowWheel = (e) => {
+    if (!rowRef.current) return
+    if (Math.abs(e.deltaY) > Math.abs(e.deltaX)) {
+      rowRef.current.scrollLeft += e.deltaY
+      e.preventDefault()
+    }
+  }
+
+  // reset scroll on sub-tab change
+  const switchSub = (s) => {
+    setSub(s)
+    if (rowRef.current) rowRef.current.scrollLeft = 0
+  }
+
   if (!voice) return null
   const v = voice
   const fmtPct = (x) => `${Math.round(x * 100)}%`
@@ -112,17 +231,26 @@ export function VoiceControls({ voice }) {
       <div className="voice-controls-header">
         <span>editing <b>Voice {v.voiceNumber}</b></span>
         <div className="sub-tabs" data-tutorial="sub-tabs">
-          <button className={sub === 'tape' ? 'active' : ''} onClick={() => setSub('tape')}>Tape</button>
-          <button className={sub === 'filter' ? 'active' : ''} onClick={() => setSub('filter')}>Filter</button>
-          <button className={sub === 'mod' ? 'active' : ''} onClick={() => setSub('mod')}>Mod</button>
-          <button className={sub === 'grain' ? 'active' : ''} onClick={() => setSub('grain')}>Grain</button>
-          <button className={sub === 'motion' ? 'active' : ''} onClick={() => setSub('motion')}>Motion</button>
-          <button className={sub === 'space' ? 'active' : ''} onClick={() => setSub('space')}>Space</button>
-          <button className={sub === 'loop' ? 'active' : ''} onClick={() => setSub('loop')}>Loop</button>
+          <button className={sub === 'tape' ? 'active' : ''} onClick={() => switchSub('tape')}>Tape</button>
+          <button className={sub === 'filter' ? 'active' : ''} onClick={() => switchSub('filter')}>Filter</button>
+          <button className={sub === 'mod' ? 'active' : ''} onClick={() => switchSub('mod')}>Mod</button>
+          <button className={sub === 'grain' ? 'active' : ''} onClick={() => switchSub('grain')}>Grain</button>
+          <button className={sub === 'freeze' ? 'active' : ''} onClick={() => switchSub('freeze')}>Freeze</button>
+          <button className={sub === 'motion' ? 'active' : ''} onClick={() => switchSub('motion')}>Motion</button>
+          <button className={sub === 'space' ? 'active' : ''} onClick={() => switchSub('space')}>Space</button>
+          <button className={sub === 'loop' ? 'active' : ''} onClick={() => switchSub('loop')}>Loop</button>
         </div>
       </div>
 
-      <div className="controls-grid">
+      <div
+        className="controls-grid"
+        ref={rowRef}
+        onPointerDown={onRowPointerDown}
+        onPointerMove={onRowPointerMove}
+        onPointerUp={onRowPointerUp}
+        onPointerCancel={onRowPointerUp}
+        onWheel={onRowWheel}
+      >
         {sub === 'tape' && <>
           <div className="panel">
             <h4>Transport</h4>
@@ -177,6 +305,22 @@ export function VoiceControls({ voice }) {
             <ModRow voice={v} pKey="tremRate" label="Rate" min={0.1} max={20} step={0.1} value={v.tremRate} onChange={v.setTremRate} format={fmtNum1} unit="Hz" />
             <ModRow voice={v} pKey="tremDepth" label="Depth" min={0} max={1} step={0.01} value={v.tremDepth} onChange={v.setTremDepth} format={fmtPct} />
           </div>
+          <div className="panel">
+            <PanelTitle active={v.panActive} onToggle={() => v.setPanActive(!v.panActive)}>Auto pan</PanelTitle>
+            <div className="row">
+              <label>Wave</label>
+              <select className="select-inline" value={v.panWave} onChange={e => v.setPanWave(e.target.value)}>
+                <option value="sine">Sine</option>
+                <option value="triangle">Triangle</option>
+                <option value="square">Square</option>
+                <option value="sawtooth">Saw</option>
+              </select>
+              <span className="value" />
+            </div>
+            <ModRow voice={v} pKey="panRate" label="Rate" min={0.05} max={20} step={0.05} value={v.panRate} onChange={v.setPanRate} format={fmtNum2} unit="Hz" />
+            <ModRow voice={v} pKey="panDepth" label="Depth" min={0} max={1} step={0.01} value={v.panDepth} onChange={v.setPanDepth} format={fmtPct} />
+            <ModRow voice={v} pKey="panCenter" label="Center" min={-1} max={1} step={0.01} value={v.panCenter} onChange={v.setPanCenter} format={(x) => x.toFixed(2)} />
+          </div>
         </>}
 
         {sub === 'space' && <>
@@ -186,10 +330,38 @@ export function VoiceControls({ voice }) {
             <ModRow voice={v} pKey="delayFb" label="Feedback" min={0} max={0.95} step={0.01} value={v.delayFb} onChange={v.setDelayFb} format={fmtPct} />
             <ModRow voice={v} pKey="wet" label="Wet" min={0} max={1} step={0.01} value={v.wet} onChange={v.setWet} format={fmtPct} />
           </div>
-          <div className="panel">
-            <PanelTitle active={v.reverbActive} onToggle={() => v.setReverbActive(!v.reverbActive)}>Spring reverb</PanelTitle>
-            <Row label="Size" value={fmtNum1(v.reverbSize)} unit="s"><Slider min={0.2} max={4} step={0.1} value={v.reverbSize} onChange={v.setReverbSize} /></Row>
+          <div
+            className="panel"
+            onDragOver={(e) => { if (e.dataTransfer.types.includes('poolId') || e.dataTransfer.types.includes('Files')) e.preventDefault() }}
+            onDrop={(e) => {
+              const pid = e.dataTransfer.getData('poolId')
+              if (pid) { e.preventDefault(); v.setReverbIRPoolId(pid) }
+            }}
+          >
+            <PanelTitle active={v.reverbActive} onToggle={() => v.setReverbActive(!v.reverbActive)}>Convolution reverb</PanelTitle>
+            <div className="row">
+              <label>IR</label>
+              <select
+                className="select-inline"
+                value={v.reverbIRPoolId || ''}
+                onChange={e => v.setReverbIRPoolId(e.target.value)}
+              >
+                <option value="">— synth spring —</option>
+                {pool.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+              </select>
+              {v.reverbIRPoolId
+                ? <button className="tiny-toggle" onClick={() => v.setReverbIRPoolId('')} title="clear IR">×</button>
+                : <span className="value" />}
+            </div>
+            {!v.reverbIRPoolId && (
+              <Row label="Size" value={fmtNum1(v.reverbSize)} unit="s"><Slider min={0.2} max={4} step={0.1} value={v.reverbSize} onChange={v.setReverbSize} /></Row>
+            )}
             <ModRow voice={v} pKey="reverbWet" label="Wet" min={0} max={1} step={0.01} value={v.reverbWet} onChange={v.setReverbWet} format={fmtPct} />
+            <div className="hint">
+              {v.reverbIRPoolId
+                ? `using ${pool.find(p => p.id === v.reverbIRPoolId)?.name || 'IR'} · drag a pool item here to swap`
+                : 'drag a pool item here to use as impulse response'}
+            </div>
           </div>
         </>}
 
@@ -222,6 +394,38 @@ export function VoiceControls({ voice }) {
             </h4>
             <Row label="Resonance" value={v.granCQResonance.toFixed(1)}><Slider min={0.5} max={20} step={0.1} value={v.granCQResonance} onChange={v.setGranCQResonance} /></Row>
             <div className="hint">24 log-spaced bandpasses · equal-loudness weighting</div>
+          </div>
+        </>}
+
+        {sub === 'freeze' && <>
+          <div className="panel">
+            <button
+              className={'freeze-power' + (v.freezeActive ? ' on' : '')}
+              onClick={() => v.setFreezeActive(!v.freezeActive)}
+            >{v.freezeActive ? '■ FREEZE ON' : '▶ FREEZE OFF'}</button>
+            <FreezeXY voice={v} />
+            <div className="hint">drag: X = position · Y↑ = longer · Y↓ = shorter</div>
+          </div>
+          <div className="panel">
+            <h4>Parameters</h4>
+            <ModRow voice={v} pKey="freezePos" label="Position" min={0} max={1} step={0.001} value={v.freezePos} onChange={v.setFreezePos}
+              format={(x) => v.buffer ? `${(x * v.buffer.duration).toFixed(2)}s` : fmtPct(x)} />
+            <Row label="Grain" value={`${Math.round(v.freezeGrain * 1000)}`} unit="ms">
+              <Slider min={0.005} max={0.5} step={0.001} value={v.freezeGrain} onChange={v.setFreezeGrain} />
+            </Row>
+            <ModRow voice={v} pKey="freezeMix" label="Mix" min={0} max={1} step={0.01} value={v.freezeMix} onChange={v.setFreezeMix} format={fmtPct} />
+            <Row label="Gain" value={fmtPct(v.freezeGainVal)}>
+              <Slider min={0} max={3} step={0.01} value={v.freezeGainVal} onChange={v.setFreezeGainVal} />
+            </Row>
+            <Row label="Pitch" value={(v.freezePitch > 0 ? '+' : '') + v.freezePitch} unit="st">
+              <Slider min={-24} max={24} step={1} value={v.freezePitch} onChange={v.setFreezePitch} />
+            </Row>
+            <Row label="Voices" value={v.freezeVoices}>
+              <Slider min={1} max={16} step={1} value={v.freezeVoices} onChange={v.setFreezeVoices} />
+            </Row>
+            <Row label="Phase" value={fmtPct(v.freezePhase)}>
+              <Slider min={0} max={1} step={0.01} value={v.freezePhase} onChange={v.setFreezePhase} />
+            </Row>
           </div>
         </>}
 

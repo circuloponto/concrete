@@ -52,6 +52,12 @@ const defaultVoice = () => ({
   tremActive: true,
   tremRate: 4,
   tremDepth: 0,
+  // auto pan
+  panActive: true,
+  panRate: 0.6,
+  panDepth: 0,
+  panCenter: 0,
+  panWave: 'sine',
   // tape delay
   delayActive: true,
   delayTime: 0.25,
@@ -61,6 +67,7 @@ const defaultVoice = () => ({
   reverbActive: true,
   reverbSize: 1.5,
   reverbWet: 0,
+  reverbIRPoolId: '',
   // granulator
   granActive: false,
   granSize: 0.08,
@@ -80,6 +87,15 @@ const defaultVoice = () => ({
   dopplerRange: 10,
   dopplerMinDist: 1,
   dopplerMix: 1,
+  // spectral freeze
+  freezeActive: false,
+  freezePos: 0.5,
+  freezeGrain: 0.06,
+  freezeMix: 1,
+  freezeGainVal: 1,
+  freezePitch: 0,
+  freezeVoices: 4,
+  freezePhase: 0.5,
   // modulation
   modulators: {},
 })
@@ -95,11 +111,21 @@ const defaultUi = () => ({ tab: 'sound', selectedPoolId: null })
 export function StateProvider({ children }) {
   const audioCtxRef = useRef(null)
   const buffersRef = useRef(new Map())
+  // Shared transport ref — SoundTab writes voice play/stop/etc, DiffusionTab reads
+  const transportRef = useRef({ voices: [], startRecord: null, stopRecord: null, recording: false })
   const [pool, setPool] = useState([])
   const [objects, setObjects] = useState([])
   const [timeline, setTimeline] = useState({ tracks: Array.from({ length: 4 }, makeTrack), length: 60 })
   const [highlight, setHighlight] = useState('#00ff9c')
   const [theme, setTheme] = useState('dark')
+  const [diffusion, setDiffusion] = useState(() => ({
+    enabled: false,
+    radius: 12,
+    voices: Array.from({ length: MAX_VOICES }, (_, i) => {
+      const a = (i / MAX_VOICES) * Math.PI * 2 - Math.PI / 2
+      return { x: Math.sin(a) * 4, z: Math.cos(a) * 4, y: 0, orbit: 0, poolId: '', trajectoryId: -1, trajectorySpeed: 0.5 }
+    }),
+  }))
   const [soundState, setSoundState] = useState(defaultSoundState)
   const [ui, setUi] = useState(defaultUi)
   const [sessionVersion, setSessionVersion] = useState(0)
@@ -141,6 +167,7 @@ export function StateProvider({ children }) {
       objects,
       timeline,
       soundState,
+      diffusion,
       ui,
     })
     const blob = new Blob([json], { type: 'application/json' })
@@ -150,7 +177,7 @@ export function StateProvider({ children }) {
     a.download = `concrete_${new Date().toISOString().replace(/[:.]/g, '-')}.json`
     a.click()
     URL.revokeObjectURL(url)
-  }, [pool, objects, timeline, highlight, theme, soundState, ui])
+  }, [pool, objects, timeline, highlight, theme, soundState, diffusion, ui])
 
   const loadSession = useCallback(async (file) => {
     const text = await file.text()
@@ -187,6 +214,7 @@ export function StateProvider({ children }) {
     })
     setHighlight(data.highlight || '#00ff9c')
     setTheme(data.theme === 'light' ? 'light' : 'dark')
+    if (data.diffusion) setDiffusion(prev => ({ ...prev, ...data.diffusion }))
     // merge loaded voices with defaults so missing fields fall back
     const loadedSound = data.soundState || defaultSoundState()
     const merged = {
@@ -210,6 +238,8 @@ export function StateProvider({ children }) {
     timeline, setTimeline,
     highlight, setHighlight,
     theme, setTheme,
+    diffusion, setDiffusion,
+    transportRef,
     soundState, setSoundState,
     ui, setUi,
     sessionVersion,

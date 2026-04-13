@@ -8,8 +8,6 @@ export function SoundTab({ selectedPoolId }) {
   const { getAudioCtx, addPoolItem, soundState, setSoundState } = useStore()
   const [audioNodes] = useState(() => {
     const ctx = getAudioCtx()
-    // busInput receives all voices + the feedback tap.
-    // master is post-bus, routed to destination + msDest + the feedback send.
     const busInput = ctx.createGain(); busInput.gain.value = 1
     const master = ctx.createGain(); master.gain.value = 1
     const feedback = ctx.createGain(); feedback.gain.value = 0

@@ -83,6 +83,18 @@ export const MOD_SPEC = {
       n.tremoloDepthGain.gain.value = val / 2
     },
   },
+  panRate: {
+    label: 'Pan Rate', min: 0.05, max: 20,
+    apply: (n, _s, val) => { n.panLfo.frequency.value = Math.max(0.01, val) },
+  },
+  panDepth: {
+    label: 'Pan Depth', min: 0, max: 1,
+    apply: (n, _s, val) => { n.panDepthGain.gain.value = val },
+  },
+  panCenter: {
+    label: 'Pan Center', min: -1, max: 1,
+    apply: (n, _s, val) => { n.autoPan.pan.value = val },
+  },
   wowRate: {
     label: 'Wow Rate', min: 0, max: 10,
     apply: (n, _s, val) => { n.wowLfo.frequency.value = Math.max(0.01, val) },
@@ -123,6 +135,14 @@ export const MOD_SPEC = {
   dopplerSpeed: {
     label: 'Doppler Speed', min: 0.05, max: 5,
     apply: (_n, _s, _val) => { /* read from dopplerRef */ },
+  },
+  freezeMix: {
+    label: 'Freeze Mix', min: 0, max: 1,
+    apply: (n, _s, val) => { if (n.freezeMixGain) n.freezeMixGain.gain.value = val },
+  },
+  freezePos: {
+    label: 'Freeze Pos', min: 0, max: 1,
+    apply: (_n, _s, _val) => { /* read from freezeRef */ },
   },
 }
 

@@ -1,19 +1,50 @@
 import { useRef, useState, useMemo } from 'react'
 import { useStore } from './state'
-import { decodeFile } from './audio'
+import { decodeFile, downloadWav } from './audio'
 
 const KINDS = [
   { id: 'imported', label: 'Imported' },
   { id: 'capture', label: 'Sound' },
   { id: 'object', label: 'Object' },
   { id: 'timeline', label: 'Timeline' },
+  { id: 'diffusion', label: 'Diffusion' },
 ]
 
 export function Pool({ selectedId, onSelect }) {
-  const { pool, addPoolItem, removePoolItem, getAudioCtx, saveSession, loadSession } = useStore()
+  const { pool, addPoolItem, removePoolItem, getBuffer, getAudioCtx, saveSession, loadSession } = useStore()
   const fileRef = useRef(null)
   const sessionRef = useRef(null)
   const [activeKind, setActiveKind] = useState('imported')
+  const [auditioning, setAuditioning] = useState(null)
+  const auditionSrcRef = useRef(null)
+
+  const stopAudition = () => {
+    if (auditionSrcRef.current) {
+      try { auditionSrcRef.current.stop() } catch {}
+      auditionSrcRef.current = null
+    }
+    setAuditioning(null)
+  }
+
+  const audition = (item) => {
+    stopAudition()
+    const buf = getBuffer(item.id)
+    if (!buf) return
+    const ctx = getAudioCtx() // also resumes if suspended
+    const src = ctx.createBufferSource()
+    src.buffer = buf
+    src.connect(ctx.destination)
+    src.onended = () => { auditionSrcRef.current = null; setAuditioning(null) }
+    src.start()
+    auditionSrcRef.current = src
+    setAuditioning(item.id)
+  }
+
+  const exportItem = (item) => {
+    const buf = getBuffer(item.id)
+    if (!buf) return
+    downloadWav(buf, `${item.name}.wav`)
+  }
 
   const counts = useMemo(() => {
     const c = { imported: 0, capture: 0, object: 0, timeline: 0 }
@@ -101,6 +132,7 @@ export function Pool({ selectedId, onSelect }) {
             {activeKind === 'capture' && <>no captures<br />record from sound tab</>}
             {activeKind === 'object' && <>no objects<br />render from object tab</>}
             {activeKind === 'timeline' && <>no mixes<br />render from timeline tab</>}
+            {activeKind === 'diffusion' && <>no captures<br />record from diffusion tab</>}
           </div>
         )}
         {visible.map(item => (
@@ -110,10 +142,29 @@ export function Pool({ selectedId, onSelect }) {
             draggable
             onDragStart={(e) => onDragStart(e, item)}
             onClick={() => onSelect && onSelect(item.id)}
-            onDoubleClick={() => removePoolItem(item.id)}
-            title="click to select • double-click to delete • drag to tracks"
+            title="click to select • drag to tracks"
           >
-            <div className="name">{item.name}</div>
+            <div className="pool-item-top">
+              <span className="name">{item.name}</span>
+              <button
+                className="pool-btn"
+                onPointerDown={(e) => e.stopPropagation()}
+                onClick={(e) => { e.stopPropagation(); e.preventDefault(); auditioning === item.id ? stopAudition() : audition(item) }}
+                title={auditioning === item.id ? 'stop' : 'audition'}
+              >{auditioning === item.id ? '■' : '▶'}</button>
+              <button
+                className="pool-btn"
+                onPointerDown={(e) => e.stopPropagation()}
+                onClick={(e) => { e.stopPropagation(); e.preventDefault(); exportItem(item) }}
+                title="export as WAV"
+              >↓</button>
+              <button
+                className="pool-btn pool-btn-del"
+                onPointerDown={(e) => e.stopPropagation()}
+                onClick={(e) => { e.stopPropagation(); e.preventDefault(); removePoolItem(item.id) }}
+                title="delete"
+              >×</button>
+            </div>
             <div className="meta">
               <span className={'kind-' + item.kind}>{item.kind}</span>
               <span>{item.duration.toFixed(2)}s</span>

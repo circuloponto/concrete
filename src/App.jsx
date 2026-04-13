@@ -4,6 +4,7 @@ import { Pool } from './Pool'
 import { SoundTab } from './SoundTab'
 import { ObjectTab } from './ObjectTab'
 import { TimelineTab } from './TimelineTab'
+import { DiffusionTab } from './DiffusionTab'
 import { Tutorial } from './Tutorial'
 import { decodeFile } from './audio'
 
@@ -101,6 +102,7 @@ function Shell() {
           <button className={tab === 'sound' ? 'active' : ''} onClick={() => setTab('sound')}>Sound</button>
           <button className={tab === 'object' ? 'active' : ''} onClick={() => setTab('object')}>Object</button>
           <button className={tab === 'timeline' ? 'active' : ''} onClick={() => setTab('timeline')}>Timeline</button>
+          <button className={tab === 'diffusion' ? 'active' : ''} onClick={() => setTab('diffusion')}>Diffusion</button>
         </div>
         <div className="spacer" />
         <button
@@ -130,6 +132,7 @@ function Shell() {
           {tab === 'sound' && <SoundTab key={sessionVersion} selectedPoolId={selectedPoolId} />}
           {tab === 'object' && <ObjectTab key={sessionVersion} />}
           {tab === 'timeline' && <TimelineTab key={sessionVersion} />}
+          {tab === 'diffusion' && <DiffusionTab key={sessionVersion} />}
         </div>
       </div>
       <Tutorial

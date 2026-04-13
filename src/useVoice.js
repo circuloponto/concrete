@@ -4,7 +4,7 @@ import { useStore } from './state'
 import { reverseBuffer, makeReverbIR, makeSaturationCurve } from './audio'
 import { applyModulation, DEFAULT_MOD, MOD_SPEC, lfoWave } from './modulation'
 
-const VIRTUAL_MOD_KEYS = ['granPos', 'granDensity', 'granPitch', 'dopplerSpeed']
+const VIRTUAL_MOD_KEYS = ['granPos', 'granDensity', 'granPitch', 'dopplerSpeed', 'freezePos']
 
 function modulatedValue(key, base, mod) {
   const spec = MOD_SPEC[key]
@@ -51,6 +51,11 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
   const [tremActive, setTremActive] = useState(initial.tremActive ?? true)
   const [tremRate, setTremRate] = useState(initial.tremRate ?? 4)
   const [tremDepth, setTremDepth] = useState(initial.tremDepth ?? 0)
+  const [panActive, setPanActive] = useState(initial.panActive ?? true)
+  const [panRate, setPanRate] = useState(initial.panRate ?? 0.6)
+  const [panDepth, setPanDepth] = useState(initial.panDepth ?? 0)
+  const [panCenter, setPanCenter] = useState(initial.panCenter ?? 0)
+  const [panWave, setPanWave] = useState(initial.panWave ?? 'sine')
 
   // space
   const [delayActive, setDelayActive] = useState(initial.delayActive ?? true)
@@ -60,6 +65,7 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
   const [reverbActive, setReverbActive] = useState(initial.reverbActive ?? true)
   const [reverbSize, setReverbSize] = useState(initial.reverbSize ?? 1.5)
   const [reverbWet, setReverbWet] = useState(initial.reverbWet ?? 0)
+  const [reverbIRPoolId, setReverbIRPoolId] = useState(initial.reverbIRPoolId ?? '')
 
   // loop
   const [reversed, setReversed] = useState(initial.reversed ?? false)
@@ -88,6 +94,16 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
   const [dopplerMinDist, setDopplerMinDist] = useState(initial.dopplerMinDist ?? 1)
   const [dopplerMix, setDopplerMix] = useState(initial.dopplerMix ?? 1)
 
+  // spectral freeze
+  const [freezeActive, setFreezeActive] = useState(initial.freezeActive ?? false)
+  const [freezePos, setFreezePos] = useState(initial.freezePos ?? 0.5)
+  const [freezeGrain, setFreezeGrain] = useState(initial.freezeGrain ?? 0.06)
+  const [freezeMix, setFreezeMix] = useState(initial.freezeMix ?? 1)
+  const [freezeGainVal, setFreezeGainVal] = useState(initial.freezeGainVal ?? 1)
+  const [freezePitch, setFreezePitch] = useState(initial.freezePitch ?? 0)
+  const [freezeVoices, setFreezeVoices] = useState(initial.freezeVoices ?? 4)
+  const [freezePhase, setFreezePhase] = useState(initial.freezePhase ?? 0.5)
+
   // modulators: key → { enabled, wave, rate, depth }
   const [modulators, setModulators] = useState(initial.modulators ?? {})
   const setModulator = useCallback((key, patch) => {
@@ -107,6 +123,8 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
   const scrubRef = useRef({ active: false, target: 0, current: 0, lastGrain: 0, raf: null, revBuf: null, revFor: null })
   const pitchRef = useRef(0)
   useEffect(() => { pitchRef.current = pitch }, [pitch])
+  const reversedRef = useRef(false)
+  useEffect(() => { reversedRef.current = reversed }, [reversed])
 
   // Live state mirror that the modulation rAF reads each frame.
   const stateRef = useRef({})
@@ -120,6 +138,7 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
     delayTime, delayFb, wet, reverbWet,
     granPos, granDensity, granPitch,
     dopplerSpeed, dopplerRange, dopplerMinDist, dopplerMix,
+    freezePos, freezeMix,
     modulators,
   }
 
@@ -139,7 +158,14 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
     minDist: dopplerMinDist, mix: dopplerMix,
   }
 
-  // Single rAF loop that drives all active LFOs directly to audio nodes.
+  // Freeze params mirror — reads from voice's own buffer
+  const freezeRef = useRef({})
+  freezeRef.current = {
+    active: freezeActive, pos: freezePos, grain: freezeGrain,
+    mix: freezeMix, gainVal: freezeGainVal, pitch: freezePitch, voices: freezeVoices, phase: freezePhase,
+  }
+
+  // Single rAF loop that drives all active LFOs + HRTF panner directly to audio nodes.
   const modRafRef = useRef(null)
   useEffect(() => {
     const tick = () => {
@@ -156,6 +182,7 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
         else if (key === 'granDensity') granRef.current.density = val
         else if (key === 'granPitch') granRef.current.pitch = val
         else if (key === 'dopplerSpeed') dopplerRef.current.speed = val
+        else if (key === 'freezePos') freezeRef.current.pos = val
       }
       modRafRef.current = requestAnimationFrame(tick)
     }
@@ -266,6 +293,59 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
     dopplerRafRef.current = requestAnimationFrame(tick)
     return () => { if (dopplerRafRef.current) cancelAnimationFrame(dopplerRafRef.current) }
   }, [getAudioCtx])
+
+  // ---- Spectral Freeze: multi-voice grains from voice buffer, pitch + phase spread ----
+  const freezeTimerRef = useRef(null)
+  const freezeVoiceIdx = useRef(0)
+  const spawnFreezeGrainRef = useRef(() => {})
+  spawnFreezeGrainRef.current = () => {
+    const f = freezeRef.current
+    const buf = bufferRef.current
+    const nodes = nodesRef.current
+    if (!nodes || !buf || !f.active || f.mix <= 0) return
+    const ctx = getAudioCtx()
+    nodes.freezeMixGain.gain.value = f.mix
+    const nv = Math.max(1, Math.round(f.voices))
+    const vi = freezeVoiceIdx.current % nv
+    freezeVoiceIdx.current = (freezeVoiceIdx.current + 1) % nv
+    const phaseOffset = f.phase * (vi / nv) * f.grain
+    const startSec = Math.max(0, Math.min(buf.duration - 0.005, f.pos * buf.duration + phaseOffset))
+    const grainDur = Math.min(f.grain, Math.max(0.005, buf.duration - startSec))
+    if (grainDur <= 0.005) return
+    const amplitude = f.gainVal / Math.sqrt(nv)
+    const rate = Math.pow(2, f.pitch / 12)
+    const actualDur = grainDur / rate
+    const fadeFrac = 0.25
+    const fadeTime = Math.min(actualDur * fadeFrac, actualDur / 2 - 0.001)
+    if (fadeTime <= 0) return
+    const when = ctx.currentTime + 0.005
+    const src = ctx.createBufferSource()
+    src.buffer = buf
+    src.playbackRate.value = rate
+    const env = ctx.createGain()
+    env.gain.setValueAtTime(0, when)
+    env.gain.linearRampToValueAtTime(amplitude, when + fadeTime)
+    env.gain.setValueAtTime(amplitude, when + actualDur - fadeTime)
+    env.gain.linearRampToValueAtTime(0, when + actualDur)
+    src.connect(env).connect(nodes.freezeMixGain)
+    try { src.start(when, startSec, grainDur) } catch {}
+    src.onended = () => { try { src.disconnect() } catch {}; try { env.disconnect() } catch {} }
+  }
+  useEffect(() => {
+    let running = true
+    const schedule = (delay) => {
+      freezeTimerRef.current = setTimeout(() => {
+        if (!running) return
+        spawnFreezeGrainRef.current()
+        const f = freezeRef.current
+        const nv = Math.max(1, Math.round(f.voices))
+        const interval = Math.max(5, (f.grain * 1000) / 2 / nv)
+        schedule(interval)
+      }, delay)
+    }
+    schedule(50)
+    return () => { running = false; if (freezeTimerRef.current) clearTimeout(freezeTimerRef.current) }
+  }, [])
 
   const stop = useCallback(() => {
     if (shifterRef.current) {
@@ -404,6 +484,10 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
     const reverbWetGain = ctx.createGain(); reverbWetGain.gain.value = reverbWet
 
     // dry path
+    // spectral freeze — grains read from the voice's buffer at posA/posB
+    const freezeMixGain = ctx.createGain()
+    freezeMixGain.gain.value = freezeActive ? freezeMix : 0
+
     const dry = ctx.createGain(); dry.gain.value = 1
 
     // doppler — serial delay + gain between FX sum and master
@@ -412,6 +496,15 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
     dopplerDelay.delayTime.value = 0
     const dopplerGain = ctx.createGain(); dopplerGain.gain.value = 1
     dopplerIn.connect(dopplerDelay).connect(dopplerGain)
+
+    // auto-pan — LFO modulating a StereoPannerNode
+    const validWave = ['sine', 'triangle', 'square', 'sawtooth'].includes(panWave) ? panWave : 'sine'
+    const autoPan = ctx.createStereoPanner()
+    autoPan.pan.value = panCenter
+    const panLfo = mkOsc(Math.max(0.01, panRate), validWave)
+    const panDepthGain = ctx.createGain()
+    panDepthGain.gain.value = panActive ? panDepth : 0
+    panLfo.connect(panDepthGain).connect(autoPan.pan)
 
     const master = ctx.createGain(); master.gain.value = voiceGain
 
@@ -437,8 +530,11 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
     tapeDelay.connect(tapeWetGain).connect(dopplerIn)
     tremoloGain.connect(reverb)
     reverb.connect(reverbWetGain).connect(dopplerIn)
-    // doppler → master (bypass when inactive, i.e. delay 0, gain 1)
-    dopplerGain.connect(master)
+    // freeze output (grains scheduled by timer, connect to dopplerIn)
+    freezeMixGain.connect(dopplerIn)
+    // doppler → autoPan → master → output
+    dopplerGain.connect(autoPan)
+    autoPan.connect(master)
     master.connect(outputNode)
 
     nodesRef.current = {
@@ -454,6 +550,8 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
       tapeDelay, tapeFbGain, tapeWetGain,
       reverb, reverbWetGain,
       dopplerIn, dopplerDelay, dopplerGain,
+      autoPan, panLfo, panDepthGain,
+      freezeMixGain,
       dry, master,
       oscs,
     }
@@ -486,7 +584,7 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
     const ctx = getAudioCtx()
     const nodes = ensureEffects()
     if (!nodes) return
-    const src = reversed ? reverseBuffer(buffer, ctx) : buffer
+    const src = reversedRef.current ? reverseBuffer(buffer, ctx) : buffer
     const shifter = new PitchShifter(ctx, src, 4096)
     shifter.tempo = tempo
     shifter.pitchSemitones = pitch
@@ -503,7 +601,7 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
       rafRef.current = requestAnimationFrame(tick)
     }
     rafRef.current = requestAnimationFrame(tick)
-  }, [buffer, reversed, tempo, pitch, loopStart, loopEnd, ensureEffects, getAudioCtx])
+  }, [buffer, tempo, pitch, loopStart, loopEnd, ensureEffects, getAudioCtx])
 
   // Snapshot
   useEffect(() => {
@@ -516,11 +614,13 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
       ringActive, ringFreq, ringAmount,
       flangerActive, flangerRate, flangerDepth, flangerFb, flangerMix,
       tremActive, tremRate, tremDepth,
+      panActive, panRate, panDepth, panCenter, panWave,
       delayActive, delayTime, delayFb, wet,
-      reverbActive, reverbSize, reverbWet,
+      reverbActive, reverbSize, reverbWet, reverbIRPoolId,
       granActive, granSize, granDensity, granPos, granDrift, granSpray,
       granPitch, granPitchSpread, granGain, granConstQ, granCQBands, granCQResonance,
       dopplerActive, dopplerSpeed, dopplerRange, dopplerMinDist, dopplerMix,
+      freezeActive, freezePos, freezeGrain, freezeMix, freezeGainVal, freezePitch, freezeVoices, freezePhase,
       modulators,
     })
   }, [onSnapshot,
@@ -531,11 +631,13 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
     ringActive, ringFreq, ringAmount,
     flangerActive, flangerRate, flangerDepth, flangerFb, flangerMix,
     tremActive, tremRate, tremDepth,
+    panActive, panRate, panDepth, panCenter, panWave,
     delayActive, delayTime, delayFb, wet,
-    reverbActive, reverbSize, reverbWet,
+    reverbActive, reverbSize, reverbWet, reverbIRPoolId,
     granActive, granSize, granDensity, granPos, granDrift, granSpray,
     granPitch, granPitchSpread, granGain, granConstQ, granCQBands, granCQResonance,
     dopplerActive, dopplerSpeed, dopplerRange, dopplerMinDist, dopplerMix,
+    freezeActive, freezePos, freezeGrain, freezeMix, freezeGainVal, freezePitch, freezeVoices, freezePhase,
     modulators,
   ])
 
@@ -585,6 +687,18 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
     nodesRef.current.tremoloGain.gain.value = 1 - d / 2
     nodesRef.current.tremoloDepthGain.gain.value = d / 2
   }, [tremDepth, tremActive])
+  // auto-pan
+  useEffect(() => { if (nodesRef.current) nodesRef.current.panLfo.frequency.value = Math.max(0.01, panRate) }, [panRate])
+  useEffect(() => {
+    if (!nodesRef.current) return
+    nodesRef.current.panDepthGain.gain.value = panActive ? panDepth : 0
+  }, [panDepth, panActive])
+  useEffect(() => { if (nodesRef.current) nodesRef.current.autoPan.pan.value = panCenter }, [panCenter])
+  useEffect(() => {
+    if (!nodesRef.current) return
+    const w = ['sine', 'triangle', 'square', 'sawtooth'].includes(panWave) ? panWave : 'sine'
+    try { nodesRef.current.panLfo.type = w } catch {}
+  }, [panWave])
   useEffect(() => { if (nodesRef.current) nodesRef.current.tapeDelay.delayTime.value = delayTime }, [delayTime])
   useEffect(() => { if (nodesRef.current) nodesRef.current.tapeFbGain.gain.value = delayFb }, [delayFb])
   // tape delay: when off, wet = 0
@@ -592,15 +706,30 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
     if (!nodesRef.current) return
     nodesRef.current.tapeWetGain.gain.value = delayActive ? wet : 0
   }, [wet, delayActive])
+  // Use a user-loaded IR if assigned; otherwise fall back to the synthesized IR.
   useEffect(() => {
-    if (nodesRef.current) nodesRef.current.reverb.buffer = makeReverbIR(getAudioCtx(), reverbSize)
-  }, [reverbSize, getAudioCtx])
+    if (!nodesRef.current) return
+    if (reverbIRPoolId) {
+      const buf = getBuffer(reverbIRPoolId)
+      if (buf) {
+        nodesRef.current.reverb.buffer = buf
+        return
+      }
+    }
+    nodesRef.current.reverb.buffer = makeReverbIR(getAudioCtx(), reverbSize)
+  }, [reverbSize, reverbIRPoolId, getAudioCtx, getBuffer])
   // reverb: when off, wet = 0
   useEffect(() => {
     if (!nodesRef.current) return
     nodesRef.current.reverbWetGain.gain.value = reverbActive ? reverbWet : 0
   }, [reverbWet, reverbActive])
   useEffect(() => { if (nodesRef.current) nodesRef.current.granBus.gain.value = granGain }, [granGain])
+  // freeze: wet/dry crossfade — duck the shifter output at the source
+  useEffect(() => {
+    if (!nodesRef.current) return
+    nodesRef.current.freezeMixGain.gain.value = freezeActive ? freezeMix : 0
+    nodesRef.current.shifterBus.gain.value = freezeActive ? (1 - freezeMix) : 1
+  }, [freezeMix, freezeActive])
   useEffect(() => {
     if (!nodesRef.current) return
     nodesRef.current.cqFilters.forEach(({ filter }) => { filter.Q.value = granCQResonance })
@@ -679,10 +808,23 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
   }, [buffer, getAudioCtx, ensureEffects])
 
   const toggleReverse = useCallback(() => {
-    const wasPlaying = playing
-    stop()
-    setReversed(r => !r)
-    if (wasPlaying) setTimeout(() => play(), 10)
+    const newRev = !reversedRef.current
+    reversedRef.current = newRev
+    setReversed(newRev)
+    if (playing) {
+      // capture current shifter position so we resume in the same spot
+      const sh = shifterRef.current
+      const pct = sh ? sh.percentagePlayed / 100 : 0
+      stop()
+      // restart with the new direction; if we were past the start, mirror the
+      // position so reversed playback continues from the same audible point
+      setTimeout(() => {
+        play()
+        if (shifterRef.current) {
+          shifterRef.current.percentagePlayed = (newRev ? (1 - pct) : pct) * 100
+        }
+      }, 10)
+    }
   }, [playing, stop, play])
 
   return {
@@ -715,6 +857,11 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
     tremActive, setTremActive,
     tremRate, setTremRate,
     tremDepth, setTremDepth,
+    panActive, setPanActive,
+    panRate, setPanRate,
+    panDepth, setPanDepth,
+    panCenter, setPanCenter,
+    panWave, setPanWave,
     // space
     delayActive, setDelayActive,
     delayTime, setDelayTime,
@@ -723,6 +870,7 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
     reverbActive, setReverbActive,
     reverbSize, setReverbSize,
     reverbWet, setReverbWet,
+    reverbIRPoolId, setReverbIRPoolId,
     // loop
     reversed, loopStart, setLoopStart, loopEnd, setLoopEnd,
     view, setView,
@@ -745,6 +893,15 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
     dopplerRange, setDopplerRange,
     dopplerMinDist, setDopplerMinDist,
     dopplerMix, setDopplerMix,
+    // freeze
+    freezeActive, setFreezeActive,
+    freezePos, setFreezePos,
+    freezeGrain, setFreezeGrain,
+    freezeMix, setFreezeMix,
+    freezeGainVal, setFreezeGainVal,
+    freezePitch, setFreezePitch,
+    freezeVoices, setFreezeVoices,
+    freezePhase, setFreezePhase,
     // modulation
     modulators, setModulator,
     play, stop, onScrub, toggleReverse, loadFromPool,
