@@ -104,6 +104,17 @@ const defaultVoice = () => ({
   bandReverbDecay: 3,
   bandReverbGain: 1.5,
   bandReverbMix: 0,
+  // clatter: own pool of samples, triggered at density with per-trigger
+  // randomized pitch / pan / doppler / reverb. independent of voice play state.
+  clatterActive: false,
+  clatterPoolIds: [],
+  clatterDensity: 2,
+  clatterPitchSpread: 12,
+  clatterPanSpread: 0.8,
+  clatterDopplerAmount: 0.3,
+  clatterReverbAmount: 0.3,
+  clatterStutterProb: 0.1,
+  clatterGain: 1,
   // spectral freeze
   freezeActive: false,
   freezePos: 0.5,
@@ -114,7 +125,7 @@ const defaultVoice = () => ({
   freezeVoices: 4,
   freezePhase: 0.5,
   // effect chain order (all modules are serial, each with internal wet/dry)
-  effectOrder: ['saturation', 'wow', 'filter', 'ringmod', 'tremolo', 'flanger', 'delay', 'reverb', 'granulator', 'freeze', 'doppler', 'banddoppler', 'bandreverb', 'autopan'],
+  effectOrder: ['saturation', 'wow', 'filter', 'ringmod', 'tremolo', 'flanger', 'delay', 'reverb', 'granulator', 'freeze', 'clatter', 'doppler', 'banddoppler', 'bandreverb', 'autopan'],
   // modulation
   modulators: {},
 })

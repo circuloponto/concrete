@@ -48,6 +48,22 @@ function Shell() {
     try { window.localStorage.setItem(TUTORIAL_KEY, '1') } catch {}
   }
 
+  // Window-level safety: once any drop lands anywhere (even if a child handler
+  // stopPropagation'd it), reset the overlay state. Same for drags that leave
+  // the window entirely.
+  useEffect(() => {
+    const reset = () => {
+      dragCounter.current = 0
+      setDropping(false)
+    }
+    window.addEventListener('drop', reset)
+    window.addEventListener('dragend', reset)
+    return () => {
+      window.removeEventListener('drop', reset)
+      window.removeEventListener('dragend', reset)
+    }
+  }, [])
+
   // ---- file drop ----
   const onDragEnter = (e) => {
     if (!e.dataTransfer.types.includes('Files')) return

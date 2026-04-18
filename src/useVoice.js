@@ -116,6 +116,17 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
   const [bandReverbGain, setBandReverbGain] = useState(initial.bandReverbGain ?? 1.5)
   const [bandReverbMix, setBandReverbMix] = useState(initial.bandReverbMix ?? 0)
 
+  // clatter: independent pool, scheduled triggers with per-trigger randomization
+  const [clatterActive, setClatterActive] = useState(initial.clatterActive ?? false)
+  const [clatterPoolIds, setClatterPoolIds] = useState(initial.clatterPoolIds ?? [])
+  const [clatterDensity, setClatterDensity] = useState(initial.clatterDensity ?? 2)
+  const [clatterPitchSpread, setClatterPitchSpread] = useState(initial.clatterPitchSpread ?? 12)
+  const [clatterPanSpread, setClatterPanSpread] = useState(initial.clatterPanSpread ?? 0.8)
+  const [clatterDopplerAmount, setClatterDopplerAmount] = useState(initial.clatterDopplerAmount ?? 0.3)
+  const [clatterReverbAmount, setClatterReverbAmount] = useState(initial.clatterReverbAmount ?? 0.3)
+  const [clatterStutterProb, setClatterStutterProb] = useState(initial.clatterStutterProb ?? 0.1)
+  const [clatterGain, setClatterGain] = useState(initial.clatterGain ?? 1)
+
   // spectral freeze
   const [freezeActive, setFreezeActive] = useState(initial.freezeActive ?? false)
   const [freezePos, setFreezePos] = useState(initial.freezePos ?? 0.5)
@@ -144,6 +155,10 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
     if (!arr.includes('bandreverb')) {
       const idx = arr.indexOf('banddoppler')
       arr.splice(idx >= 0 ? idx + 1 : arr.length, 0, 'bandreverb')
+    }
+    if (!arr.includes('clatter')) {
+      const idx = arr.indexOf('freeze')
+      arr.splice(idx >= 0 ? idx + 1 : arr.length, 0, 'clatter')
     }
     return arr
   })
@@ -212,6 +227,13 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
   const bandReverbRef = useRef({})
   bandReverbRef.current = {
     active: bandReverbActive, mix: bandReverbMix, gain: bandReverbGain,
+  }
+  const clatterRef = useRef({})
+  clatterRef.current = {
+    active: clatterActive, poolIds: clatterPoolIds, density: clatterDensity,
+    pitchSpread: clatterPitchSpread, panSpread: clatterPanSpread,
+    dopplerAmount: clatterDopplerAmount, reverbAmount: clatterReverbAmount,
+    stutterProb: clatterStutterProb, gain: clatterGain,
   }
 
   // Freeze params mirror — reads from voice's own buffer
@@ -437,6 +459,109 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
     if (mod && mod.rebuildBands) mod.rebuildBands(bandReverbBands, bandReverbSize, bandReverbSpread, bandReverbDecay)
   }, [bandReverbBands, bandReverbSize, bandReverbSpread, bandReverbDecay])
 
+  // Clatter output gain live update
+  useEffect(() => {
+    const nodes = nodesRef.current
+    if (nodes && nodes.modules && nodes.modules.clatter) {
+      nodes.modules.clatter.clatterBus.gain.value = clatterGain
+    }
+  }, [clatterGain])
+
+  // Clatter spawn — picks a random pool item, randomises pitch / pan, may add
+  // a per-trigger doppler pass-by and a reverb send, and optionally stutters.
+  const clatterTimerRef = useRef(null)
+  const spawnClatterRef = useRef(() => {})
+  spawnClatterRef.current = () => {
+    const c = clatterRef.current
+    const nodes = nodesRef.current
+    if (!c.active || !nodes || !nodes.modules || !nodes.modules.clatter) return
+    const ids = c.poolIds || []
+    if (ids.length === 0) return
+    const ctx = getAudioCtx()
+    const mod = nodes.modules.clatter
+    const id = ids[Math.floor(Math.random() * ids.length)]
+    const buf = getBuffer(id)
+    if (!buf) return
+
+    const pitchSemi = (Math.random() * 2 - 1) * c.pitchSpread
+    const rate = Math.pow(2, pitchSemi / 12)
+    const pan0 = (Math.random() * 2 - 1) * c.panSpread
+    const when = ctx.currentTime + 0.01
+    const dur = Math.min(6, buf.duration / rate)
+    if (dur < 0.02) return
+
+    const src = ctx.createBufferSource()
+    src.buffer = buf
+    src.playbackRate.value = rate
+
+    const env = ctx.createGain()
+    const fade = Math.min(0.01, dur * 0.1)
+    env.gain.setValueAtTime(0, when)
+    env.gain.linearRampToValueAtTime(1, when + fade)
+    env.gain.setValueAtTime(1, when + dur - fade)
+    env.gain.linearRampToValueAtTime(0, when + dur)
+
+    const panner = ctx.createStereoPanner()
+    panner.pan.setValueAtTime(pan0, when)
+
+    // per-trigger doppler pass-by: sweep pan across the stereo field and
+    // ramp a delay line down as the "source" flies past.
+    let tailNode = panner
+    if (c.dopplerAmount > 0 && Math.random() < c.dopplerAmount) {
+      const sign = Math.random() < 0.5 ? -1 : 1
+      panner.pan.setValueAtTime(-sign * c.panSpread, when)
+      panner.pan.linearRampToValueAtTime(sign * c.panSpread, when + dur)
+      const delay = ctx.createDelay(0.1)
+      const dopAmt = 0.02 + Math.random() * 0.06
+      delay.delayTime.setValueAtTime(dopAmt, when)
+      delay.delayTime.linearRampToValueAtTime(0, when + dur)
+      panner.connect(delay)
+      tailNode = delay
+    }
+
+    src.connect(env).connect(panner)
+
+    // per-trigger reverb send: a random wet amount scaled by reverbAmount
+    if (c.reverbAmount > 0 && Math.random() < c.reverbAmount) {
+      const wetGain = ctx.createGain()
+      wetGain.gain.value = Math.random() * c.reverbAmount
+      tailNode.connect(wetGain).connect(mod.clatterReverb)
+    }
+    tailNode.connect(mod.clatterBus)
+
+    try { src.start(when) } catch {}
+    src.onended = () => {
+      try { src.disconnect() } catch {}
+      try { env.disconnect() } catch {}
+      try { panner.disconnect() } catch {}
+      if (tailNode !== panner) { try { tailNode.disconnect() } catch {} }
+    }
+
+    // stutter: maybe fire 2-5 quick repeats
+    if (c.stutterProb > 0 && Math.random() < c.stutterProb) {
+      const n = 2 + Math.floor(Math.random() * 4)
+      for (let i = 1; i < n; i++) {
+        setTimeout(() => spawnClatterRef.current(), i * (30 + Math.random() * 80))
+      }
+    }
+  }
+
+  useEffect(() => {
+    let running = true
+    const schedule = (delay) => {
+      clatterTimerRef.current = setTimeout(() => {
+        if (!running) return
+        spawnClatterRef.current()
+        const c = clatterRef.current
+        const base = 1000 / Math.max(0.05, c.density)
+        const jitter = base * 0.5 * Math.random()
+        schedule(base - base * 0.25 + jitter)
+      }, delay)
+    }
+    schedule(100)
+    return () => { running = false; if (clatterTimerRef.current) clearTimeout(clatterTimerRef.current) }
+  }, [])
+
   // ---- Spectral Freeze: multi-voice grains from voice buffer, pitch + phase spread ----
   const freezeTimerRef = useRef(null)
   const freezeVoiceIdx = useRef(0)
@@ -640,6 +765,20 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
       input.connect(freezeDry).connect(output)
       freezeMixGain.connect(output)
       modules.freeze = { input, output, freezeDry, freezeMixGain } }
+
+    // Clatter: independent sample sequencer. Dry signal passes through; a
+    // scheduler injects random samples from its own pool into `clatterBus`,
+    // and a shared convolver provides per-trigger reverb sends.
+    { const input = G(), output = G()
+      const dry = G(1)
+      const clatterBus = G(clatterGain)
+      const clatterReverb = ctx.createConvolver()
+      clatterReverb.buffer = makeReverbIR(ctx, 2, 3)
+      const clatterReverbWet = G(0.6)
+      input.connect(dry).connect(output)
+      clatterBus.connect(output)
+      clatterReverb.connect(clatterReverbWet).connect(output)
+      modules.clatter = { input, output, dry, clatterBus, clatterReverb, clatterReverbWet } }
 
     // Doppler
     { const input = G(), output = G()
@@ -931,6 +1070,9 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
       bandDopplerPanWidth, bandDopplerDistance, bandDopplerGain, bandDopplerMix,
       bandReverbActive, bandReverbBands, bandReverbSize, bandReverbSpread,
       bandReverbDecay, bandReverbGain, bandReverbMix,
+      clatterActive, clatterPoolIds, clatterDensity, clatterPitchSpread,
+      clatterPanSpread, clatterDopplerAmount, clatterReverbAmount,
+      clatterStutterProb, clatterGain,
       freezeActive, freezePos, freezeGrain, freezeMix, freezeGainVal, freezePitch, freezeVoices, freezePhase,
       effectOrder,
       modulators,
@@ -953,6 +1095,9 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
     bandDopplerPanWidth, bandDopplerDistance, bandDopplerGain, bandDopplerMix,
     bandReverbActive, bandReverbBands, bandReverbSize, bandReverbSpread,
     bandReverbDecay, bandReverbGain, bandReverbMix,
+    clatterActive, clatterPoolIds, clatterDensity, clatterPitchSpread,
+    clatterPanSpread, clatterDopplerAmount, clatterReverbAmount,
+    clatterStutterProb, clatterGain,
     freezeActive, freezePos, freezeGrain, freezeMix, freezeGainVal, freezePitch, freezeVoices, freezePhase,
     effectOrder,
     modulators,
@@ -1247,6 +1392,16 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
     bandReverbDecay, setBandReverbDecay,
     bandReverbGain, setBandReverbGain,
     bandReverbMix, setBandReverbMix,
+    // clatter
+    clatterActive, setClatterActive,
+    clatterPoolIds, setClatterPoolIds,
+    clatterDensity, setClatterDensity,
+    clatterPitchSpread, setClatterPitchSpread,
+    clatterPanSpread, setClatterPanSpread,
+    clatterDopplerAmount, setClatterDopplerAmount,
+    clatterReverbAmount, setClatterReverbAmount,
+    clatterStutterProb, setClatterStutterProb,
+    clatterGain, setClatterGain,
     // freeze
     freezeActive, setFreezeActive,
     freezePos, setFreezePos,
