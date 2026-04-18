@@ -148,6 +148,10 @@ export function SoundTab({ selectedPoolId }) {
         <div style={{ flex: 1 }} />
         <button onClick={() => scrollBy(-1)}>◀</button>
         <button onClick={() => scrollBy(1)}>▶</button>
+        <button
+          onClick={() => voices.forEach(v => { try { v.stop() } catch {} })}
+          title="stop all voices"
+        >■ Stop all</button>
         <button onClick={() => setVoiceCount(voiceCount - 1)} disabled={voiceCount <= 1}>− Voice</button>
         <button onClick={() => setVoiceCount(voiceCount + 1)} disabled={voiceCount >= MAX_VOICES}>+ Voice</button>
         <span style={{ color: 'var(--hl)', fontSize: 11, marginLeft: 4 }}>{voiceCount}/{MAX_VOICES}</span>

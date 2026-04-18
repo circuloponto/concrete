@@ -21,6 +21,9 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
   const [sourceName, setSourceName] = useState('')
   const [loadedPoolId, setLoadedPoolId] = useState(initial.loadedPoolId || '')
   const [playing, setPlaying] = useState(false)
+  // Mirror playing flag into a ref so schedulers (granulator, freeze) can
+  // gate their spawn loops without triggering re-renders or effect re-runs.
+  const playingRef = useRef(false)
   const [position, setPosition] = useState(0)
 
   // tape
@@ -94,6 +97,15 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
   const [dopplerMinDist, setDopplerMinDist] = useState(initial.dopplerMinDist ?? 1)
   const [dopplerMix, setDopplerMix] = useState(initial.dopplerMix ?? 1)
 
+  // band doppler: split signal into N freq bands, each band a pass-by
+  const [bandDopplerActive, setBandDopplerActive] = useState(initial.bandDopplerActive ?? false)
+  const [bandDopplerBands, setBandDopplerBands] = useState(initial.bandDopplerBands ?? 6)
+  const [bandDopplerSpeed, setBandDopplerSpeed] = useState(initial.bandDopplerSpeed ?? 0.4)
+  const [bandDopplerSpread, setBandDopplerSpread] = useState(initial.bandDopplerSpread ?? 0.6)
+  const [bandDopplerPanWidth, setBandDopplerPanWidth] = useState(initial.bandDopplerPanWidth ?? 0.9)
+  const [bandDopplerDistance, setBandDopplerDistance] = useState(initial.bandDopplerDistance ?? 1)
+  const [bandDopplerMix, setBandDopplerMix] = useState(initial.bandDopplerMix ?? 0)
+
   // spectral freeze
   const [freezeActive, setFreezeActive] = useState(initial.freezeActive ?? false)
   const [freezePos, setFreezePos] = useState(initial.freezePos ?? 0.5)
@@ -105,9 +117,23 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
   const [freezePhase, setFreezePhase] = useState(initial.freezePhase ?? 0.5)
 
   // effect chain order
-  const [effectOrder, setEffectOrder] = useState(initial.effectOrder ?? [
-    'saturation', 'wow', 'filter', 'ringmod', 'tremolo', 'flanger', 'delay', 'reverb', 'freeze', 'doppler', 'autopan',
-  ])
+  const [effectOrder, setEffectOrder] = useState(() => {
+    const defaults = [
+      'saturation', 'wow', 'filter', 'ringmod', 'tremolo', 'flanger', 'delay',
+      'reverb', 'freeze', 'doppler', 'banddoppler', 'autopan',
+    ]
+    const existing = initial.effectOrder
+    if (!existing) return defaults
+    // migrate: add banddoppler next to doppler if missing (for sessions saved
+    // before the band-doppler effect existed)
+    if (!existing.includes('banddoppler')) {
+      const idx = existing.indexOf('doppler')
+      const arr = [...existing]
+      arr.splice(idx >= 0 ? idx + 1 : arr.length, 0, 'banddoppler')
+      return arr
+    }
+    return existing
+  })
   const effectOrderRef = useRef(effectOrder)
   effectOrderRef.current = effectOrder
 
@@ -164,6 +190,12 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
     active: dopplerActive, speed: dopplerSpeed, range: dopplerRange,
     minDist: dopplerMinDist, mix: dopplerMix,
   }
+  const bandDopplerRef = useRef({})
+  bandDopplerRef.current = {
+    active: bandDopplerActive, bands: bandDopplerBands, speed: bandDopplerSpeed,
+    spread: bandDopplerSpread, panWidth: bandDopplerPanWidth,
+    distance: bandDopplerDistance, mix: bandDopplerMix,
+  }
 
   // Freeze params mirror — reads from voice's own buffer
   const freezeRef = useRef({})
@@ -209,6 +241,7 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
     const nodes = nodesRef.current
     const p = granRef.current
     if (!buf || !nodes || !p.active) return
+    if (!playingRef.current) return
     const ctx = getAudioCtx()
 
     // advance cursor by drift
@@ -301,6 +334,59 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
     return () => { if (dopplerRafRef.current) cancelAnimationFrame(dopplerRafRef.current) }
   }, [getAudioCtx])
 
+  // Band Doppler rAF — animates each band's delay/pan/gain independently so
+  // the N bands feel like N different objects passing by the listener.
+  const bandDopplerRafRef = useRef(null)
+  useEffect(() => {
+    const TAU = Math.PI * 2
+    const tick = () => {
+      const bd = bandDopplerRef.current
+      const nodes = nodesRef.current
+      const mod = nodes && nodes.modules && nodes.modules.banddoppler
+      if (mod) {
+        const ctx = getAudioCtx()
+        const bands = mod.bandsRef.value
+        const now = ctx.currentTime
+        if (bd.active && bd.mix > 0 && bands.length > 0) {
+          mod.dry.gain.setTargetAtTime(1 - bd.mix, now, 0.02)
+          mod.wet.gain.setTargetAtTime(1, now, 0.02)
+          const t = performance.now() / 1000
+          const minDist = 0.8
+          for (let i = 0; i < bands.length; i++) {
+            const b = bands[i]
+            const evenPhase = i / bands.length
+            const phaseOffset = evenPhase * (1 - bd.spread) + b.phase * bd.spread
+            const theta = t * bd.speed * TAU + phaseOffset * TAU
+            // simulated lateral position; distance = hypot(x, minDist)
+            const x = Math.sin(theta) * 6 * bd.distance
+            const dist = Math.hypot(x, minDist)
+            const tDelay = Math.min(0.09, dist / 343)
+            const pan = Math.max(-1, Math.min(1, (x / 6) * bd.panWidth))
+            // 1/r falloff with the band count factor so summed output doesn't blow up
+            const amp = (minDist / dist) * bd.mix / Math.sqrt(bands.length)
+            try {
+              b.delay.delayTime.setTargetAtTime(tDelay, now, 0.02)
+              b.panner.pan.setTargetAtTime(pan, now, 0.02)
+              b.gain.gain.setTargetAtTime(amp, now, 0.02)
+            } catch {}
+          }
+        } else {
+          mod.dry.gain.setTargetAtTime(1, now, 0.05)
+          mod.wet.gain.setTargetAtTime(0, now, 0.05)
+        }
+      }
+      bandDopplerRafRef.current = requestAnimationFrame(tick)
+    }
+    bandDopplerRafRef.current = requestAnimationFrame(tick)
+    return () => { if (bandDopplerRafRef.current) cancelAnimationFrame(bandDopplerRafRef.current) }
+  }, [getAudioCtx])
+
+  // Rebuild the band network when the band count changes.
+  useEffect(() => {
+    const mod = nodesRef.current && nodesRef.current.modules && nodesRef.current.modules.banddoppler
+    if (mod && mod.rebuildBands) mod.rebuildBands(bandDopplerBands)
+  }, [bandDopplerBands])
+
   // ---- Spectral Freeze: multi-voice grains from voice buffer, pitch + phase spread ----
   const freezeTimerRef = useRef(null)
   const freezeVoiceIdx = useRef(0)
@@ -310,6 +396,7 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
     const buf = bufferRef.current
     const nodes = nodesRef.current
     if (!nodes || !buf || !f.active || f.mix <= 0) return
+    if (!playingRef.current) return
     const ctx = getAudioCtx()
     nodes.freezeMixGain.gain.value = f.mix
     const nv = Math.max(1, Math.round(f.voices))
@@ -360,6 +447,7 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
       shifterRef.current = null
     }
     if (rafRef.current) cancelAnimationFrame(rafRef.current)
+    playingRef.current = false
     setPlaying(false)
   }, [])
 
@@ -509,6 +597,48 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
       input.connect(dopplerDelay).connect(dopplerGain).connect(output)
       modules.doppler = { input, output, dopplerDelay, dopplerGain } }
 
+    // Band Doppler: splits the signal into N bandpass paths, each with its
+    // own delay / pan / gain animated on a phase-offset pass-by curve. The
+    // band count is rebuildable, so `rebuildBands()` tears down and rebuilds.
+    { const input = G(), output = G()
+      const dry = G(1)
+      const wet = G(0)
+      input.connect(dry).connect(output)
+      wet.connect(output)
+      const bandDopplerBandsRef = { value: [] }
+      const rebuildBands = (n) => {
+        // teardown previous
+        for (const b of bandDopplerBandsRef.value) {
+          try { b.bpf.disconnect() } catch {}
+          try { b.delay.disconnect() } catch {}
+          try { b.panner.disconnect() } catch {}
+          try { b.gain.disconnect() } catch {}
+        }
+        const fresh = []
+        const N = Math.max(1, Math.min(12, n | 0))
+        for (let i = 0; i < N; i++) {
+          const bpf = ctx.createBiquadFilter()
+          bpf.type = 'bandpass'
+          const t = N === 1 ? 0.5 : i / (N - 1)
+          bpf.frequency.value = 60 * Math.pow(10000 / 60, t) // log-spaced 60..10000
+          bpf.Q.value = 6
+          const delay = ctx.createDelay(0.1)
+          delay.delayTime.value = 0
+          const panner = ctx.createStereoPanner()
+          const gain = G(1)
+          input.connect(bpf).connect(delay).connect(panner).connect(gain).connect(wet)
+          // deterministic-looking phases via hash, so reloads look the same
+          const phase = (Math.sin(i * 12.9898) * 43758.5453) % 1
+          fresh.push({ bpf, delay, panner, gain, phase: ((phase % 1) + 1) % 1 })
+        }
+        bandDopplerBandsRef.value = fresh
+      }
+      rebuildBands(bandDopplerBands)
+      modules.banddoppler = {
+        input, output, dry, wet, bandsRef: bandDopplerBandsRef, rebuildBands,
+      }
+    }
+
     // Auto Pan
     { const input = G(), output = G()
       const validWave = ['sine', 'triangle', 'square', 'sawtooth'].includes(panWave) ? panWave : 'sine'
@@ -598,6 +728,7 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
     // loop sizes reliably, unlike soundtouchjs whose internal ~93 ms buffer
     // makes mid-stream seeks flaky.
     const needsShifter = tempo !== 1 || pitch !== 0
+    playingRef.current = true
     setPlaying(true)
     if (!needsShifter) {
       const { start: ls0, end: le0 } = loopBoundsRef.current
@@ -702,6 +833,8 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
       granActive, granSize, granDensity, granPos, granDrift, granSpray,
       granPitch, granPitchSpread, granGain, granConstQ, granCQBands, granCQResonance,
       dopplerActive, dopplerSpeed, dopplerRange, dopplerMinDist, dopplerMix,
+      bandDopplerActive, bandDopplerBands, bandDopplerSpeed, bandDopplerSpread,
+      bandDopplerPanWidth, bandDopplerDistance, bandDopplerMix,
       freezeActive, freezePos, freezeGrain, freezeMix, freezeGainVal, freezePitch, freezeVoices, freezePhase,
       effectOrder,
       modulators,
@@ -720,6 +853,8 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
     granActive, granSize, granDensity, granPos, granDrift, granSpray,
     granPitch, granPitchSpread, granGain, granConstQ, granCQBands, granCQResonance,
     dopplerActive, dopplerSpeed, dopplerRange, dopplerMinDist, dopplerMix,
+    bandDopplerActive, bandDopplerBands, bandDopplerSpeed, bandDopplerSpread,
+    bandDopplerPanWidth, bandDopplerDistance, bandDopplerMix,
     freezeActive, freezePos, freezeGrain, freezeMix, freezeGainVal, freezePitch, freezeVoices, freezePhase,
     effectOrder,
     modulators,
@@ -997,6 +1132,14 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
     dopplerRange, setDopplerRange,
     dopplerMinDist, setDopplerMinDist,
     dopplerMix, setDopplerMix,
+    // band doppler
+    bandDopplerActive, setBandDopplerActive,
+    bandDopplerBands, setBandDopplerBands,
+    bandDopplerSpeed, setBandDopplerSpeed,
+    bandDopplerSpread, setBandDopplerSpread,
+    bandDopplerPanWidth, setBandDopplerPanWidth,
+    bandDopplerDistance, setBandDopplerDistance,
+    bandDopplerMix, setBandDopplerMix,
     // freeze
     freezeActive, setFreezeActive,
     freezePos, setFreezePos,

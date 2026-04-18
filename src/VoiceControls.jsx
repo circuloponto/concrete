@@ -33,7 +33,9 @@ function FreezeXY({ voice }) {
       const posX = voice.freezePos * W
       const dur = voice.buffer ? voice.buffer.duration : 1
       const grainPx = Math.max(2, (voice.freezeGrain / dur) * W)
-      const grainY = (1 - voice.freezeGrain / 0.5) * H // top = long, bottom = short
+      // Y maps 0.005 s (bottom) → full buffer duration (top)
+      const maxG = dur
+      const grainY = (1 - Math.max(0, Math.min(1, (voice.freezeGrain - 0.005) / Math.max(0.001, maxG - 0.005)))) * H
       // selection rectangle
       ctx.fillStyle = hl + '33'
       ctx.fillRect(posX, 0, grainPx, H)
@@ -54,9 +56,10 @@ function FreezeXY({ voice }) {
   const update = (e) => {
     const r = canvasRef.current.getBoundingClientRect()
     const x = Math.max(0, Math.min(1, (e.clientX - r.left) / r.width))
-    // Y: top of pad = 0.5s (big grain), bottom = 0.005s (tiny grain)
+    // Y: top of pad = full buffer duration (select all), bottom = 5 ms
     const normY = 1 - Math.max(0, Math.min(1, (e.clientY - r.top) / r.height))
-    const grain = 0.005 + normY * 0.495 // 5ms..500ms
+    const maxGrain = voice.buffer ? voice.buffer.duration : 0.5
+    const grain = 0.005 + normY * (maxGrain - 0.005)
     voice.setFreezePos(x)
     voice.setFreezeGrain(grain)
   }
@@ -74,7 +77,7 @@ function FreezeXY({ voice }) {
 const EFFECT_LABELS = {
   saturation: 'Saturation', wow: 'Wow/Flutter', filter: 'Filter', ringmod: 'Ring Mod', tremolo: 'Tremolo',
   flanger: 'Flanger', delay: 'Tape Delay', reverb: 'Reverb', granulator: 'Granulator', freeze: 'Freeze',
-  doppler: 'Doppler', autopan: 'Auto Pan',
+  doppler: 'Doppler', banddoppler: 'Band Doppler', autopan: 'Auto Pan',
 }
 
 function ChainOrder({ voice }) {
@@ -452,8 +455,18 @@ export function VoiceControls({ voice }) {
             <h4>Parameters</h4>
             <ModRow voice={v} pKey="freezePos" label="Position" min={0} max={1} step={0.001} value={v.freezePos} onChange={v.setFreezePos}
               format={(x) => v.buffer ? `${(x * v.buffer.duration).toFixed(2)}s` : fmtPct(x)} />
-            <Row label="Grain" value={`${Math.round(v.freezeGrain * 1000)}`} unit="ms">
-              <Slider min={0.005} max={0.5} step={0.001} value={v.freezeGrain} onChange={v.setFreezeGrain} />
+            <Row
+              label="Grain"
+              value={v.freezeGrain >= 1 ? v.freezeGrain.toFixed(2) : Math.round(v.freezeGrain * 1000)}
+              unit={v.freezeGrain >= 1 ? 's' : 'ms'}
+            >
+              <Slider
+                min={0.005}
+                max={v.buffer ? v.buffer.duration : 0.5}
+                step={0.001}
+                value={Math.min(v.freezeGrain, v.buffer ? v.buffer.duration : 0.5)}
+                onChange={v.setFreezeGrain}
+              />
             </Row>
             <ModRow voice={v} pKey="freezeMix" label="Mix" min={0} max={1} step={0.01} value={v.freezeMix} onChange={v.setFreezeMix} format={fmtPct} />
             <Row label="Gain" value={fmtPct(v.freezeGainVal)}>
@@ -484,6 +497,34 @@ export function VoiceControls({ voice }) {
             <Row label="Min dist" value={v.dopplerMinDist.toFixed(1)} unit="m"><Slider min={0.2} max={10} step={0.1} value={v.dopplerMinDist} onChange={v.setDopplerMinDist} /></Row>
             <Row label="Mix" value={fmtPct(v.dopplerMix)}><Slider min={0} max={1} step={0.01} value={v.dopplerMix} onChange={v.setDopplerMix} /></Row>
             <div className="hint">source passes by the listener · 343 m/s air speed</div>
+          </div>
+
+          <div className="panel">
+            <h4>Band Doppler
+              <button
+                className={'tiny-toggle' + (v.bandDopplerActive ? ' active' : '')}
+                onClick={() => v.setBandDopplerActive(!v.bandDopplerActive)}
+              >{v.bandDopplerActive ? 'ON' : 'OFF'}</button>
+            </h4>
+            <Row label="Bands" value={v.bandDopplerBands}>
+              <Slider min={2} max={12} step={1} value={v.bandDopplerBands} onChange={v.setBandDopplerBands} />
+            </Row>
+            <Row label="Speed" value={v.bandDopplerSpeed.toFixed(2)} unit="Hz">
+              <Slider min={0.05} max={3} step={0.01} value={v.bandDopplerSpeed} onChange={v.setBandDopplerSpeed} />
+            </Row>
+            <Row label="Spread" value={fmtPct(v.bandDopplerSpread)}>
+              <Slider min={0} max={1} step={0.01} value={v.bandDopplerSpread} onChange={v.setBandDopplerSpread} />
+            </Row>
+            <Row label="Pan width" value={fmtPct(v.bandDopplerPanWidth)}>
+              <Slider min={0} max={1} step={0.01} value={v.bandDopplerPanWidth} onChange={v.setBandDopplerPanWidth} />
+            </Row>
+            <Row label="Distance" value={v.bandDopplerDistance.toFixed(2)}>
+              <Slider min={0.2} max={3} step={0.01} value={v.bandDopplerDistance} onChange={v.setBandDopplerDistance} />
+            </Row>
+            <Row label="Mix" value={fmtPct(v.bandDopplerMix)}>
+              <Slider min={0} max={1} step={0.01} value={v.bandDopplerMix} onChange={v.setBandDopplerMix} />
+            </Row>
+            <div className="hint">splits signal into N log-spaced bands · each does its own pass-by</div>
           </div>
         </>}
 
