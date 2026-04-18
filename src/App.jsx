@@ -22,6 +22,7 @@ function Shell() {
   const setSelectedPoolId = (id) => setUi(prev => ({ ...prev, selectedPoolId: id }))
   const [tutorialOpen, setTutorialOpen] = useState(false)
   const [dropping, setDropping] = useState(false)
+  const [poolOpen, setPoolOpen] = useState(false)
   const dragCounter = useRef(0)
 
   useEffect(() => {
@@ -97,6 +98,11 @@ function Shell() {
       onDrop={onDrop}
     >
       <div className="topbar">
+        <button
+          className="pool-drawer-toggle"
+          onClick={() => setPoolOpen(o => !o)}
+          title="toggle pool"
+        >☰</button>
         <div className="brand">contrète</div>
         <div className="tabs" data-tutorial="tabs">
           <button className={tab === 'sound' ? 'active' : ''} onClick={() => setTab('sound')}>Sound</button>
@@ -126,8 +132,11 @@ function Shell() {
           />
         </label>
       </div>
-      <div className="main">
-        <Pool selectedId={selectedPoolId} onSelect={setSelectedPoolId} />
+      <div className={'main' + (poolOpen ? ' pool-open' : '')}>
+        <div className="pool-wrap">
+          <Pool selectedId={selectedPoolId} onSelect={setSelectedPoolId} />
+        </div>
+        {poolOpen && <div className="pool-backdrop" onClick={() => setPoolOpen(false)} />}
         <div className="content">
           {tab === 'sound' && <SoundTab key={sessionVersion} selectedPoolId={selectedPoolId} />}
           {tab === 'object' && <ObjectTab key={sessionVersion} />}
