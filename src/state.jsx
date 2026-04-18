@@ -94,7 +94,16 @@ const defaultVoice = () => ({
   bandDopplerSpread: 0.6,
   bandDopplerPanWidth: 0.9,
   bandDopplerDistance: 1,
+  bandDopplerGain: 1.5,
   bandDopplerMix: 0,
+  // multi-band reverb (sound split into N freq bands, each with own tail)
+  bandReverbActive: false,
+  bandReverbBands: 6,
+  bandReverbSize: 1.5,
+  bandReverbSpread: 0.5,
+  bandReverbDecay: 3,
+  bandReverbGain: 1.5,
+  bandReverbMix: 0,
   // spectral freeze
   freezeActive: false,
   freezePos: 0.5,
@@ -105,7 +114,7 @@ const defaultVoice = () => ({
   freezeVoices: 4,
   freezePhase: 0.5,
   // effect chain order (all modules are serial, each with internal wet/dry)
-  effectOrder: ['saturation', 'wow', 'filter', 'ringmod', 'tremolo', 'flanger', 'delay', 'reverb', 'granulator', 'freeze', 'doppler', 'banddoppler', 'autopan'],
+  effectOrder: ['saturation', 'wow', 'filter', 'ringmod', 'tremolo', 'flanger', 'delay', 'reverb', 'granulator', 'freeze', 'doppler', 'banddoppler', 'bandreverb', 'autopan'],
   // modulation
   modulators: {},
 })

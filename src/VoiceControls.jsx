@@ -77,7 +77,7 @@ function FreezeXY({ voice }) {
 const EFFECT_LABELS = {
   saturation: 'Saturation', wow: 'Wow/Flutter', filter: 'Filter', ringmod: 'Ring Mod', tremolo: 'Tremolo',
   flanger: 'Flanger', delay: 'Tape Delay', reverb: 'Reverb', granulator: 'Granulator', freeze: 'Freeze',
-  doppler: 'Doppler', banddoppler: 'Band Doppler', autopan: 'Auto Pan',
+  doppler: 'Doppler', banddoppler: 'Band Doppler', bandreverb: 'Band Reverb', autopan: 'Auto Pan',
 }
 
 function ChainOrder({ voice }) {
@@ -521,10 +521,41 @@ export function VoiceControls({ voice }) {
             <Row label="Distance" value={v.bandDopplerDistance.toFixed(2)}>
               <Slider min={0.2} max={3} step={0.01} value={v.bandDopplerDistance} onChange={v.setBandDopplerDistance} />
             </Row>
+            <Row label="Gain" value={v.bandDopplerGain.toFixed(2)} unit="×">
+              <Slider min={0} max={4} step={0.01} value={v.bandDopplerGain} onChange={v.setBandDopplerGain} />
+            </Row>
             <Row label="Mix" value={fmtPct(v.bandDopplerMix)}>
               <Slider min={0} max={1} step={0.01} value={v.bandDopplerMix} onChange={v.setBandDopplerMix} />
             </Row>
             <div className="hint">splits signal into N log-spaced bands · each does its own pass-by</div>
+          </div>
+
+          <div className="panel">
+            <h4>Band Reverb
+              <button
+                className={'tiny-toggle' + (v.bandReverbActive ? ' active' : '')}
+                onClick={() => v.setBandReverbActive(!v.bandReverbActive)}
+              >{v.bandReverbActive ? 'ON' : 'OFF'}</button>
+            </h4>
+            <Row label="Bands" value={v.bandReverbBands}>
+              <Slider min={2} max={12} step={1} value={v.bandReverbBands} onChange={v.setBandReverbBands} />
+            </Row>
+            <Row label="Size" value={v.bandReverbSize.toFixed(2)} unit="s">
+              <Slider min={0.2} max={6} step={0.05} value={v.bandReverbSize} onChange={v.setBandReverbSize} />
+            </Row>
+            <Row label="Spread" value={fmtPct(v.bandReverbSpread)}>
+              <Slider min={0} max={1} step={0.01} value={v.bandReverbSpread} onChange={v.setBandReverbSpread} />
+            </Row>
+            <Row label="Decay" value={v.bandReverbDecay.toFixed(2)}>
+              <Slider min={1} max={6} step={0.05} value={v.bandReverbDecay} onChange={v.setBandReverbDecay} />
+            </Row>
+            <Row label="Gain" value={v.bandReverbGain.toFixed(2)} unit="×">
+              <Slider min={0} max={4} step={0.01} value={v.bandReverbGain} onChange={v.setBandReverbGain} />
+            </Row>
+            <Row label="Mix" value={fmtPct(v.bandReverbMix)}>
+              <Slider min={0} max={1} step={0.01} value={v.bandReverbMix} onChange={v.setBandReverbMix} />
+            </Row>
+            <div className="hint">splits signal into N bands · each band has its own reverb tail</div>
           </div>
         </>}
 

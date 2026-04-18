@@ -104,7 +104,17 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
   const [bandDopplerSpread, setBandDopplerSpread] = useState(initial.bandDopplerSpread ?? 0.6)
   const [bandDopplerPanWidth, setBandDopplerPanWidth] = useState(initial.bandDopplerPanWidth ?? 0.9)
   const [bandDopplerDistance, setBandDopplerDistance] = useState(initial.bandDopplerDistance ?? 1)
+  const [bandDopplerGain, setBandDopplerGain] = useState(initial.bandDopplerGain ?? 1.5)
   const [bandDopplerMix, setBandDopplerMix] = useState(initial.bandDopplerMix ?? 0)
+
+  // band reverb: split signal into N freq bands, each with its own reverb tail
+  const [bandReverbActive, setBandReverbActive] = useState(initial.bandReverbActive ?? false)
+  const [bandReverbBands, setBandReverbBands] = useState(initial.bandReverbBands ?? 6)
+  const [bandReverbSize, setBandReverbSize] = useState(initial.bandReverbSize ?? 1.5)
+  const [bandReverbSpread, setBandReverbSpread] = useState(initial.bandReverbSpread ?? 0.5)
+  const [bandReverbDecay, setBandReverbDecay] = useState(initial.bandReverbDecay ?? 3)
+  const [bandReverbGain, setBandReverbGain] = useState(initial.bandReverbGain ?? 1.5)
+  const [bandReverbMix, setBandReverbMix] = useState(initial.bandReverbMix ?? 0)
 
   // spectral freeze
   const [freezeActive, setFreezeActive] = useState(initial.freezeActive ?? false)
@@ -124,15 +134,18 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
     ]
     const existing = initial.effectOrder
     if (!existing) return defaults
-    // migrate: add banddoppler next to doppler if missing (for sessions saved
-    // before the band-doppler effect existed)
-    if (!existing.includes('banddoppler')) {
-      const idx = existing.indexOf('doppler')
-      const arr = [...existing]
+    // migrate: add banddoppler / bandreverb next to doppler if missing (for
+    // sessions saved before those effects existed)
+    let arr = [...existing]
+    if (!arr.includes('banddoppler')) {
+      const idx = arr.indexOf('doppler')
       arr.splice(idx >= 0 ? idx + 1 : arr.length, 0, 'banddoppler')
-      return arr
     }
-    return existing
+    if (!arr.includes('bandreverb')) {
+      const idx = arr.indexOf('banddoppler')
+      arr.splice(idx >= 0 ? idx + 1 : arr.length, 0, 'bandreverb')
+    }
+    return arr
   })
   const effectOrderRef = useRef(effectOrder)
   effectOrderRef.current = effectOrder
@@ -194,7 +207,11 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
   bandDopplerRef.current = {
     active: bandDopplerActive, bands: bandDopplerBands, speed: bandDopplerSpeed,
     spread: bandDopplerSpread, panWidth: bandDopplerPanWidth,
-    distance: bandDopplerDistance, mix: bandDopplerMix,
+    distance: bandDopplerDistance, gain: bandDopplerGain, mix: bandDopplerMix,
+  }
+  const bandReverbRef = useRef({})
+  bandReverbRef.current = {
+    active: bandReverbActive, mix: bandReverbMix, gain: bandReverbGain,
   }
 
   // Freeze params mirror — reads from voice's own buffer
@@ -254,7 +271,10 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
     const sprayed = granPosCursorRef.current + (Math.random() - 0.5) * 2 * p.spray
     const normPos = ((sprayed % 1) + 1) % 1
     const startSec = normPos * buf.duration
-    const pitchSemi = p.pitch + (Math.random() - 0.5) * 2 * p.pitchSpread
+    // Compose voice pitch into grain rate so the voice-level Pitch control
+    // shifts grains too (grains are spawned from the raw buffer, so this is
+    // the hook point where the voice pitch is applied).
+    const pitchSemi = p.pitch + pitchRef.current + (Math.random() - 0.5) * 2 * p.pitchSpread
     const rate = Math.pow(2, pitchSemi / 12)
     const grainLen = Math.max(0.005, Math.min(buf.duration - startSec - 0.001, p.size))
     if (grainLen <= 0.005) return
@@ -349,7 +369,7 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
         const now = ctx.currentTime
         if (bd.active && bd.mix > 0 && bands.length > 0) {
           mod.dry.gain.setTargetAtTime(1 - bd.mix, now, 0.02)
-          mod.wet.gain.setTargetAtTime(1, now, 0.02)
+          mod.wet.gain.setTargetAtTime(bd.gain, now, 0.02)
           const t = performance.now() / 1000
           const minDist = 0.8
           for (let i = 0; i < bands.length; i++) {
@@ -387,6 +407,36 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
     if (mod && mod.rebuildBands) mod.rebuildBands(bandDopplerBands)
   }, [bandDopplerBands])
 
+  // Band Reverb rAF — just drives the wet/dry crossfade and gain; the actual
+  // reverb is baked into each band's convolver IR.
+  const bandReverbRafRef = useRef(null)
+  useEffect(() => {
+    const tick = () => {
+      const br = bandReverbRef.current
+      const nodes = nodesRef.current
+      const mod = nodes && nodes.modules && nodes.modules.bandreverb
+      if (mod) {
+        const now = getAudioCtx().currentTime
+        if (br.active && br.mix > 0) {
+          mod.dry.gain.setTargetAtTime(1 - br.mix, now, 0.05)
+          mod.wet.gain.setTargetAtTime(br.gain, now, 0.05)
+        } else {
+          mod.dry.gain.setTargetAtTime(1, now, 0.05)
+          mod.wet.gain.setTargetAtTime(0, now, 0.05)
+        }
+      }
+      bandReverbRafRef.current = requestAnimationFrame(tick)
+    }
+    bandReverbRafRef.current = requestAnimationFrame(tick)
+    return () => { if (bandReverbRafRef.current) cancelAnimationFrame(bandReverbRafRef.current) }
+  }, [getAudioCtx])
+
+  // Rebuild the band reverb network when its bands / size / spread / decay change.
+  useEffect(() => {
+    const mod = nodesRef.current && nodesRef.current.modules && nodesRef.current.modules.bandreverb
+    if (mod && mod.rebuildBands) mod.rebuildBands(bandReverbBands, bandReverbSize, bandReverbSpread, bandReverbDecay)
+  }, [bandReverbBands, bandReverbSize, bandReverbSpread, bandReverbDecay])
+
   // ---- Spectral Freeze: multi-voice grains from voice buffer, pitch + phase spread ----
   const freezeTimerRef = useRef(null)
   const freezeVoiceIdx = useRef(0)
@@ -407,7 +457,8 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
     const grainDur = Math.min(f.grain, Math.max(0.005, buf.duration - startSec))
     if (grainDur <= 0.005) return
     const amplitude = f.gainVal / Math.sqrt(nv)
-    const rate = Math.pow(2, f.pitch / 12)
+    // Freeze grains honour voice pitch too (freezes are raw-buffer grains).
+    const rate = Math.pow(2, (f.pitch + pitchRef.current) / 12)
     const actualDur = grainDur / rate
     const fadeFrac = 0.25
     const fadeTime = Math.min(actualDur * fadeFrac, actualDur / 2 - 0.001)
@@ -639,6 +690,49 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
       }
     }
 
+    // Band Reverb: splits the signal into N bandpass paths, each through its
+    // own convolver reverb with an independently sized / shaped IR.
+    { const input = G(), output = G()
+      const dry = G(1)
+      const wet = G(0)
+      input.connect(dry).connect(output)
+      wet.connect(output)
+      const bandReverbBandsRef = { value: [] }
+      const rebuildBands = (n, sizeSec, spread, decay) => {
+        for (const b of bandReverbBandsRef.value) {
+          try { b.bpf.disconnect() } catch {}
+          try { b.convolver.disconnect() } catch {}
+          try { b.gain.disconnect() } catch {}
+        }
+        const fresh = []
+        const N = Math.max(1, Math.min(12, n | 0))
+        for (let i = 0; i < N; i++) {
+          const bpf = ctx.createBiquadFilter()
+          bpf.type = 'bandpass'
+          const t = N === 1 ? 0.5 : i / (N - 1)
+          bpf.frequency.value = 60 * Math.pow(10000 / 60, t)
+          bpf.Q.value = 5
+          // per-band IR duration: base size, with deterministic spread so
+          // lower bands tend to have longer tails (matches real acoustics).
+          const r = (Math.sin(i * 23.717) * 43758.5453) % 1
+          const rn = ((r % 1) + 1) % 1 // 0..1
+          const lowBias = 1 - t           // 1 at low bands, 0 at high
+          const variation = (rn - 0.5) * 2 // -1..1
+          const dur = Math.max(0.1, sizeSec * (0.5 + lowBias * 0.7 + variation * spread * 0.6))
+          const convolver = ctx.createConvolver()
+          convolver.buffer = makeReverbIR(ctx, dur, Math.max(0.5, decay))
+          const gain = G(1)
+          input.connect(bpf).connect(convolver).connect(gain).connect(wet)
+          fresh.push({ bpf, convolver, gain })
+        }
+        bandReverbBandsRef.value = fresh
+      }
+      rebuildBands(bandReverbBands, bandReverbSize, bandReverbSpread, bandReverbDecay)
+      modules.bandreverb = {
+        input, output, dry, wet, bandsRef: bandReverbBandsRef, rebuildBands,
+      }
+    }
+
     // Auto Pan
     { const input = G(), output = G()
       const validWave = ['sine', 'triangle', 'square', 'sawtooth'].includes(panWave) ? panWave : 'sine'
@@ -834,7 +928,9 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
       granPitch, granPitchSpread, granGain, granConstQ, granCQBands, granCQResonance,
       dopplerActive, dopplerSpeed, dopplerRange, dopplerMinDist, dopplerMix,
       bandDopplerActive, bandDopplerBands, bandDopplerSpeed, bandDopplerSpread,
-      bandDopplerPanWidth, bandDopplerDistance, bandDopplerMix,
+      bandDopplerPanWidth, bandDopplerDistance, bandDopplerGain, bandDopplerMix,
+      bandReverbActive, bandReverbBands, bandReverbSize, bandReverbSpread,
+      bandReverbDecay, bandReverbGain, bandReverbMix,
       freezeActive, freezePos, freezeGrain, freezeMix, freezeGainVal, freezePitch, freezeVoices, freezePhase,
       effectOrder,
       modulators,
@@ -854,7 +950,9 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
     granPitch, granPitchSpread, granGain, granConstQ, granCQBands, granCQResonance,
     dopplerActive, dopplerSpeed, dopplerRange, dopplerMinDist, dopplerMix,
     bandDopplerActive, bandDopplerBands, bandDopplerSpeed, bandDopplerSpread,
-    bandDopplerPanWidth, bandDopplerDistance, bandDopplerMix,
+    bandDopplerPanWidth, bandDopplerDistance, bandDopplerGain, bandDopplerMix,
+    bandReverbActive, bandReverbBands, bandReverbSize, bandReverbSpread,
+    bandReverbDecay, bandReverbGain, bandReverbMix,
     freezeActive, freezePos, freezeGrain, freezeMix, freezeGainVal, freezePitch, freezeVoices, freezePhase,
     effectOrder,
     modulators,
@@ -1139,7 +1237,16 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
     bandDopplerSpread, setBandDopplerSpread,
     bandDopplerPanWidth, setBandDopplerPanWidth,
     bandDopplerDistance, setBandDopplerDistance,
+    bandDopplerGain, setBandDopplerGain,
     bandDopplerMix, setBandDopplerMix,
+    // band reverb
+    bandReverbActive, setBandReverbActive,
+    bandReverbBands, setBandReverbBands,
+    bandReverbSize, setBandReverbSize,
+    bandReverbSpread, setBandReverbSpread,
+    bandReverbDecay, setBandReverbDecay,
+    bandReverbGain, setBandReverbGain,
+    bandReverbMix, setBandReverbMix,
     // freeze
     freezeActive, setFreezeActive,
     freezePos, setFreezePos,
