@@ -579,6 +579,11 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
     if (nodesRef.current?.wireChain) nodesRef.current.wireChain()
   }, [effectOrder])
 
+  // Keep loop bounds in a ref so the play-tick closure picks up live edits
+  // (e.g. dragging loop handles during playback) without having to restart.
+  const loopBoundsRef = useRef({ start: loopStart, end: loopEnd })
+  loopBoundsRef.current = { start: loopStart, end: loopEnd }
+
   const play = useCallback(() => {
     if (!buffer) return
     if (shifterRef.current) { try { shifterRef.current.disconnect() } catch {}; shifterRef.current = null }
@@ -587,23 +592,98 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
     const nodes = ensureEffects()
     if (!nodes) return
     const src = reversedRef.current ? reverseBuffer(buffer, ctx) : buffer
-    const shifter = new PitchShifter(ctx, src, 4096)
-    shifter.tempo = tempo
-    shifter.pitchSemitones = pitch
-    shifter.connect(nodes.shifterBus)
-    shifterRef.current = shifter
-    shifter.percentagePlayed = loopStart * 100
+    const dur = src.duration
+    // Use a native AudioBufferSourceNode when we don't need pitch/tempo
+    // shifting — it supports hardware loopStart/loopEnd and handles arbitrary
+    // loop sizes reliably, unlike soundtouchjs whose internal ~93 ms buffer
+    // makes mid-stream seeks flaky.
+    const needsShifter = tempo !== 1 || pitch !== 0
     setPlaying(true)
+    if (!needsShifter) {
+      const { start: ls0, end: le0 } = loopBoundsRef.current
+      const node = ctx.createBufferSource()
+      node.buffer = src
+      node.loop = true
+      node.loopStart = Math.max(0, Math.min(dur, ls0 * dur))
+      node.loopEnd = Math.max(node.loopStart + 0.01, Math.min(dur, le0 * dur))
+      node.connect(nodes.shifterBus)
+      const t0 = ctx.currentTime
+      const startOffset = node.loopStart
+      node.start(0, startOffset)
+      // Shim matching the PitchShifter surface the rest of useVoice expects.
+      const shim = {
+        _kind: 'source',
+        _node: node,
+        _dest: nodes.shifterBus,
+        _startedAt: t0,
+        _startOffset: startOffset,
+        get tempo() { return 1 },
+        set tempo(_v) {},
+        get pitchSemitones() { return 0 },
+        set pitchSemitones(_v) {},
+        get percentagePlayed() {
+          const ls = node.loopStart
+          const le = node.loopEnd
+          const range = Math.max(0.001, le - ls)
+          const elapsed = ctx.currentTime - this._startedAt
+          const within = ((this._startOffset - ls) + elapsed) % range
+          return ((ls + within) / dur) * 100
+        },
+        set percentagePlayed(pct) {
+          try { this._node.stop() } catch {}
+          try { this._node.disconnect() } catch {}
+          const off = Math.max(0, Math.min(dur - 0.001, (pct / 100) * dur))
+          const ns = ctx.createBufferSource()
+          ns.buffer = src
+          ns.loop = true
+          ns.loopStart = node.loopStart
+          ns.loopEnd = node.loopEnd
+          ns.connect(this._dest)
+          ns.start(0, off)
+          this._node = ns
+          this._startedAt = ctx.currentTime
+          this._startOffset = off
+        },
+        updateLoop(ls, le) {
+          this._node.loopStart = Math.max(0, Math.min(dur, ls * dur))
+          this._node.loopEnd = Math.max(this._node.loopStart + 0.01, Math.min(dur, le * dur))
+        },
+        connect() {},
+        disconnect() {
+          try { this._node.stop() } catch {}
+          try { this._node.disconnect() } catch {}
+        },
+      }
+      shifterRef.current = shim
+    } else {
+      const shifter = new PitchShifter(ctx, src, 4096)
+      shifter.tempo = tempo
+      shifter.pitchSemitones = pitch
+      shifter.connect(nodes.shifterBus)
+      shifterRef.current = shifter
+      requestAnimationFrame(() => {
+        if (shifterRef.current === shifter) shifter.percentagePlayed = loopBoundsRef.current.start * 100
+      })
+    }
     const tick = () => {
       const sh = shifterRef.current
       if (!sh) return
+      // Keep loop points in sync with the ref (for source-node path, this is
+      // how live drags of loop handles apply during playback).
+      if (sh._kind === 'source' && sh.updateLoop) {
+        const { start: ls, end: le } = loopBoundsRef.current
+        sh.updateLoop(ls, le)
+      }
       const p = sh.percentagePlayed / 100
       setPosition(p)
-      if (p >= loopEnd || p >= 0.999) sh.percentagePlayed = loopStart * 100
+      const { start: ls, end: le } = loopBoundsRef.current
+      if (sh._kind !== 'source' && (p >= le || p >= 0.999)) {
+        sh.percentagePlayed = ls * 100
+      }
       rafRef.current = requestAnimationFrame(tick)
     }
     rafRef.current = requestAnimationFrame(tick)
-  }, [buffer, tempo, pitch, loopStart, loopEnd, ensureEffects, getAudioCtx])
+  }, [buffer, tempo, pitch, ensureEffects, getAudioCtx])
 
   // Snapshot
   useEffect(() => {
@@ -646,8 +726,24 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
   ])
 
   // Live updates
-  useEffect(() => { if (shifterRef.current) shifterRef.current.tempo = tempo }, [tempo])
-  useEffect(() => { if (shifterRef.current) shifterRef.current.pitchSemitones = pitch }, [pitch])
+  // If tempo/pitch moves away from defaults while the cheap source-node path
+  // is playing, rebuild as a PitchShifter so the change takes effect. Going
+  // back to defaults also rebuilds (cheaply, to shed soundtouchjs).
+  const playRef = useRef(play); playRef.current = play
+  const rebuildPlaybackIfNeeded = () => {
+    const sh = shifterRef.current
+    if (!sh) return
+    const onSource = sh._kind === 'source'
+    const needsShifter = tempo !== 1 || pitch !== 0
+    if (onSource && needsShifter) { playRef.current() }
+    else if (!onSource && !needsShifter) { playRef.current() }
+    else if (!onSource) {
+      try { sh.tempo = tempo } catch {}
+      try { sh.pitchSemitones = pitch } catch {}
+    }
+  }
+  useEffect(() => { rebuildPlaybackIfNeeded() }, [tempo])
+  useEffect(() => { rebuildPlaybackIfNeeded() }, [pitch])
   useEffect(() => { if (nodesRef.current) nodesRef.current.master.gain.value = voiceGain }, [voiceGain])
   // saturation: when off, force identity curve (pass-through)
   useEffect(() => {

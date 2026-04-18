@@ -7,6 +7,7 @@ export function VoicePlayer({ voice, focused, onFocus }) {
   const {
     voiceNumber, buffer, loadedPoolId, playing, position,
     view, setView, play, stop, onScrub, toggleReverse, reversed, loadFromPool,
+    loopStart, setLoopStart, loopEnd, setLoopEnd,
   } = voice
 
   const onDrop = (e) => {
@@ -48,8 +49,10 @@ export function VoicePlayer({ voice, focused, onFocus }) {
         <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 8 }}>
           <div onPointerDown={e => e.stopPropagation()}>
             {view === 'disk'
-              ? <Disk buffer={buffer} position={position} playing={playing} onScrub={onScrub} size={220} />
-              : <Waveform buffer={buffer} position={position} playing={playing} onScrub={onScrub} width={440} height={140} />}
+              ? <Disk buffer={buffer} position={position} playing={playing} onScrub={onScrub} size={220}
+                  loopStart={loopStart} loopEnd={loopEnd} setLoopStart={setLoopStart} setLoopEnd={setLoopEnd} />
+              : <Waveform buffer={buffer} position={position} playing={playing} onScrub={onScrub} width={440} height={140}
+                  loopStart={loopStart} loopEnd={loopEnd} setLoopStart={setLoopStart} setLoopEnd={setLoopEnd} />}
           </div>
           <div className="toolbar" onPointerDown={e => e.stopPropagation()}>
             {!playing ? <button onClick={play}>▶</button> : <button className="active" onClick={stop}>■</button>}

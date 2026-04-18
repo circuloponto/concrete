@@ -2,11 +2,16 @@ import { useRef, useEffect } from 'react'
 import { useStore } from './state'
 import { themeColor } from './audio'
 
-export function Waveform({ buffer, position, playing, onScrub, width = 640, height = 160 }) {
+export function Waveform({ buffer, position, playing, onScrub, width = 640, height = 160,
+                            loopStart = 0, loopEnd = 1, setLoopStart, setLoopEnd }) {
   const { highlight, theme } = useStore()
   const canvasRef = useRef(null)
   const posRef = useRef(position)
-  const draggingRef = useRef(false)
+  const loopRef = useRef({ start: loopStart, end: loopEnd })
+  loopRef.current = { start: loopStart, end: loopEnd }
+  // 'scrub' | 'select' | null
+  const modeRef = useRef(null)
+  const selectAnchorRef = useRef(0)
   posRef.current = position
 
   useEffect(() => {
@@ -53,6 +58,20 @@ export function Waveform({ buffer, position, playing, onScrub, width = 640, heig
     const draw = () => {
       ctx.clearRect(0, 0, width, height)
       ctx.drawImage(off, 0, 0)
+      // loop-region shading
+      const ls = loopRef.current.start
+      const le = loopRef.current.end
+      if (ls > 0 || le < 1) {
+        const xs = Math.floor(ls * width)
+        const xe = Math.floor(le * width)
+        ctx.fillStyle = highlight + '22'
+        ctx.fillRect(xs, 0, xe - xs, height)
+        ctx.strokeStyle = highlight + '99'
+        ctx.lineWidth = 1
+        ctx.beginPath(); ctx.moveTo(xs + 0.5, 0); ctx.lineTo(xs + 0.5, height); ctx.stroke()
+        ctx.beginPath(); ctx.moveTo(xe + 0.5, 0); ctx.lineTo(xe + 0.5, height); ctx.stroke()
+      }
+      // playhead
       const x = Math.floor(posRef.current * width)
       ctx.strokeStyle = highlight
       ctx.lineWidth = 2
@@ -76,21 +95,44 @@ export function Waveform({ buffer, position, playing, onScrub, width = 640, heig
   }
 
   const onDown = (e) => {
-    draggingRef.current = true
     e.currentTarget.setPointerCapture(e.pointerId)
     const p = getPos(e)
+    if (e.shiftKey && setLoopStart && setLoopEnd) {
+      // enter pre-select: don't write loop bounds yet — wait until the user
+      // actually drags, otherwise a plain shift-click would collapse the loop
+      // to ~1 ms and the playback becomes silent.
+      modeRef.current = 'select-armed'
+      selectAnchorRef.current = p
+      return
+    }
+    modeRef.current = 'scrub'
     onScrub && onScrub(p, 0, 'start')
   }
   const onMove = (e) => {
-    if (!draggingRef.current) return
+    if (!modeRef.current) return
     const p = getPos(e)
+    if (modeRef.current === 'select-armed' || modeRef.current === 'select') {
+      const a = selectAnchorRef.current
+      if (modeRef.current === 'select-armed' && Math.abs(p - a) < 0.005) return
+      modeRef.current = 'select'
+      const lo = Math.min(a, p)
+      const hi = Math.max(a, p)
+      // Minimum loop width: 150 ms in buffer time. Shorter loops confuse
+      // soundtouchjs's ~93 ms process buffer and produce silence / glitches.
+      const dur = buffer ? buffer.duration : 1
+      const minFrac = Math.min(0.5, 0.15 / dur)
+      setLoopStart(lo)
+      setLoopEnd(Math.min(1, Math.max(lo + minFrac, hi)))
+      return
+    }
     const delta = p - posRef.current
     onScrub && onScrub(p, delta, 'move')
   }
   const onUp = (e) => {
-    if (!draggingRef.current) return
-    draggingRef.current = false
-    onScrub && onScrub(posRef.current, 0, 'end')
+    if (!modeRef.current) return
+    const wasScrub = modeRef.current === 'scrub'
+    modeRef.current = null
+    if (wasScrub) onScrub && onScrub(posRef.current, 0, 'end')
   }
 
   return (
