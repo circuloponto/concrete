@@ -1240,10 +1240,19 @@ input[type="color"] { padding: 0; width: 28px; height: 22px; border: 1px solid v
     font-size: 10px;
   }
 
-  /* Controls grid: stack panels single column */
+  /* Controls grid: stack panels single column and allow page to scroll
+     vertically so tall panels (freeze, grain) are fully reachable. */
   .controls-grid {
-    grid-template-columns: 1fr !important;
-    gap: 10px;
+    flex-direction: column;
+    overflow-x: hidden;
+    overflow-y: visible;
+    cursor: default;
+    min-height: 0;
+  }
+  .controls-grid .panel {
+    flex: 0 0 auto;
+    width: 100%;
+    max-width: 100%;
   }
   .panel { padding: 8px; }
 
