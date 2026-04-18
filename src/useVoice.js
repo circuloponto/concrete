@@ -1,6 +1,6 @@
 import { useRef, useState, useEffect, useCallback } from 'react'
 import { PitchShifter } from 'soundtouchjs'
-import { useStore } from './state'
+import { useStore, defaultVoice } from './state'
 import { reverseBuffer, makeReverbIR, makeSaturationCurve } from './audio'
 import { applyModulation, DEFAULT_MOD, MOD_SPEC, lfoWave } from './modulation'
 
@@ -116,17 +116,6 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
   const [bandReverbGain, setBandReverbGain] = useState(initial.bandReverbGain ?? 1.5)
   const [bandReverbMix, setBandReverbMix] = useState(initial.bandReverbMix ?? 0)
 
-  // clatter: independent pool, scheduled triggers with per-trigger randomization
-  const [clatterActive, setClatterActive] = useState(initial.clatterActive ?? false)
-  const [clatterPoolIds, setClatterPoolIds] = useState(initial.clatterPoolIds ?? [])
-  const [clatterDensity, setClatterDensity] = useState(initial.clatterDensity ?? 2)
-  const [clatterPitchSpread, setClatterPitchSpread] = useState(initial.clatterPitchSpread ?? 12)
-  const [clatterPanSpread, setClatterPanSpread] = useState(initial.clatterPanSpread ?? 0.8)
-  const [clatterDopplerAmount, setClatterDopplerAmount] = useState(initial.clatterDopplerAmount ?? 0.3)
-  const [clatterReverbAmount, setClatterReverbAmount] = useState(initial.clatterReverbAmount ?? 0.3)
-  const [clatterStutterProb, setClatterStutterProb] = useState(initial.clatterStutterProb ?? 0.1)
-  const [clatterGain, setClatterGain] = useState(initial.clatterGain ?? 1)
-
   // spectral freeze
   const [freezeActive, setFreezeActive] = useState(initial.freezeActive ?? false)
   const [freezePos, setFreezePos] = useState(initial.freezePos ?? 0.5)
@@ -156,10 +145,8 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
       const idx = arr.indexOf('banddoppler')
       arr.splice(idx >= 0 ? idx + 1 : arr.length, 0, 'bandreverb')
     }
-    if (!arr.includes('clatter')) {
-      const idx = arr.indexOf('freeze')
-      arr.splice(idx >= 0 ? idx + 1 : arr.length, 0, 'clatter')
-    }
+    // strip clatter if present from older sessions (feature removed)
+    arr = arr.filter(x => x !== 'clatter')
     return arr
   })
   const effectOrderRef = useRef(effectOrder)
@@ -227,13 +214,6 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
   const bandReverbRef = useRef({})
   bandReverbRef.current = {
     active: bandReverbActive, mix: bandReverbMix, gain: bandReverbGain,
-  }
-  const clatterRef = useRef({})
-  clatterRef.current = {
-    active: clatterActive, poolIds: clatterPoolIds, density: clatterDensity,
-    pitchSpread: clatterPitchSpread, panSpread: clatterPanSpread,
-    dopplerAmount: clatterDopplerAmount, reverbAmount: clatterReverbAmount,
-    stutterProb: clatterStutterProb, gain: clatterGain,
   }
 
   // Freeze params mirror — reads from voice's own buffer
@@ -459,108 +439,6 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
     if (mod && mod.rebuildBands) mod.rebuildBands(bandReverbBands, bandReverbSize, bandReverbSpread, bandReverbDecay)
   }, [bandReverbBands, bandReverbSize, bandReverbSpread, bandReverbDecay])
 
-  // Clatter output gain live update
-  useEffect(() => {
-    const nodes = nodesRef.current
-    if (nodes && nodes.modules && nodes.modules.clatter) {
-      nodes.modules.clatter.clatterBus.gain.value = clatterGain
-    }
-  }, [clatterGain])
-
-  // Clatter spawn — picks a random pool item, randomises pitch / pan, may add
-  // a per-trigger doppler pass-by and a reverb send, and optionally stutters.
-  const clatterTimerRef = useRef(null)
-  const spawnClatterRef = useRef(() => {})
-  spawnClatterRef.current = () => {
-    const c = clatterRef.current
-    const nodes = nodesRef.current
-    if (!c.active || !nodes || !nodes.modules || !nodes.modules.clatter) return
-    const ids = c.poolIds || []
-    if (ids.length === 0) return
-    const ctx = getAudioCtx()
-    const mod = nodes.modules.clatter
-    const id = ids[Math.floor(Math.random() * ids.length)]
-    const buf = getBuffer(id)
-    if (!buf) return
-
-    const pitchSemi = (Math.random() * 2 - 1) * c.pitchSpread
-    const rate = Math.pow(2, pitchSemi / 12)
-    const pan0 = (Math.random() * 2 - 1) * c.panSpread
-    const when = ctx.currentTime + 0.01
-    const dur = Math.min(6, buf.duration / rate)
-    if (dur < 0.02) return
-
-    const src = ctx.createBufferSource()
-    src.buffer = buf
-    src.playbackRate.value = rate
-
-    const env = ctx.createGain()
-    const fade = Math.min(0.01, dur * 0.1)
-    env.gain.setValueAtTime(0, when)
-    env.gain.linearRampToValueAtTime(1, when + fade)
-    env.gain.setValueAtTime(1, when + dur - fade)
-    env.gain.linearRampToValueAtTime(0, when + dur)
-
-    const panner = ctx.createStereoPanner()
-    panner.pan.setValueAtTime(pan0, when)
-
-    // per-trigger doppler pass-by: sweep pan across the stereo field and
-    // ramp a delay line down as the "source" flies past.
-    let tailNode = panner
-    if (c.dopplerAmount > 0 && Math.random() < c.dopplerAmount) {
-      const sign = Math.random() < 0.5 ? -1 : 1
-      panner.pan.setValueAtTime(-sign * c.panSpread, when)
-      panner.pan.linearRampToValueAtTime(sign * c.panSpread, when + dur)
-      const delay = ctx.createDelay(0.1)
-      const dopAmt = 0.02 + Math.random() * 0.06
-      delay.delayTime.setValueAtTime(dopAmt, when)
-      delay.delayTime.linearRampToValueAtTime(0, when + dur)
-      panner.connect(delay)
-      tailNode = delay
-    }
-
-    src.connect(env).connect(panner)
-
-    // per-trigger reverb send: a random wet amount scaled by reverbAmount
-    if (c.reverbAmount > 0 && Math.random() < c.reverbAmount) {
-      const wetGain = ctx.createGain()
-      wetGain.gain.value = Math.random() * c.reverbAmount
-      tailNode.connect(wetGain).connect(mod.clatterReverb)
-    }
-    tailNode.connect(mod.clatterBus)
-
-    try { src.start(when) } catch {}
-    src.onended = () => {
-      try { src.disconnect() } catch {}
-      try { env.disconnect() } catch {}
-      try { panner.disconnect() } catch {}
-      if (tailNode !== panner) { try { tailNode.disconnect() } catch {} }
-    }
-
-    // stutter: maybe fire 2-5 quick repeats
-    if (c.stutterProb > 0 && Math.random() < c.stutterProb) {
-      const n = 2 + Math.floor(Math.random() * 4)
-      for (let i = 1; i < n; i++) {
-        setTimeout(() => spawnClatterRef.current(), i * (30 + Math.random() * 80))
-      }
-    }
-  }
-
-  useEffect(() => {
-    let running = true
-    const schedule = (delay) => {
-      clatterTimerRef.current = setTimeout(() => {
-        if (!running) return
-        spawnClatterRef.current()
-        const c = clatterRef.current
-        const base = 1000 / Math.max(0.05, c.density)
-        const jitter = base * 0.5 * Math.random()
-        schedule(base - base * 0.25 + jitter)
-      }, delay)
-    }
-    schedule(100)
-    return () => { running = false; if (clatterTimerRef.current) clearTimeout(clatterTimerRef.current) }
-  }, [])
 
   // ---- Spectral Freeze: multi-voice grains from voice buffer, pitch + phase spread ----
   const freezeTimerRef = useRef(null)
@@ -765,20 +643,6 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
       input.connect(freezeDry).connect(output)
       freezeMixGain.connect(output)
       modules.freeze = { input, output, freezeDry, freezeMixGain } }
-
-    // Clatter: independent sample sequencer. Dry signal passes through; a
-    // scheduler injects random samples from its own pool into `clatterBus`,
-    // and a shared convolver provides per-trigger reverb sends.
-    { const input = G(), output = G()
-      const dry = G(1)
-      const clatterBus = G(clatterGain)
-      const clatterReverb = ctx.createConvolver()
-      clatterReverb.buffer = makeReverbIR(ctx, 2, 3)
-      const clatterReverbWet = G(0.6)
-      input.connect(dry).connect(output)
-      clatterBus.connect(output)
-      clatterReverb.connect(clatterReverbWet).connect(output)
-      modules.clatter = { input, output, dry, clatterBus, clatterReverb, clatterReverbWet } }
 
     // Doppler
     { const input = G(), output = G()
@@ -1070,9 +934,6 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
       bandDopplerPanWidth, bandDopplerDistance, bandDopplerGain, bandDopplerMix,
       bandReverbActive, bandReverbBands, bandReverbSize, bandReverbSpread,
       bandReverbDecay, bandReverbGain, bandReverbMix,
-      clatterActive, clatterPoolIds, clatterDensity, clatterPitchSpread,
-      clatterPanSpread, clatterDopplerAmount, clatterReverbAmount,
-      clatterStutterProb, clatterGain,
       freezeActive, freezePos, freezeGrain, freezeMix, freezeGainVal, freezePitch, freezeVoices, freezePhase,
       effectOrder,
       modulators,
@@ -1095,9 +956,6 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
     bandDopplerPanWidth, bandDopplerDistance, bandDopplerGain, bandDopplerMix,
     bandReverbActive, bandReverbBands, bandReverbSize, bandReverbSpread,
     bandReverbDecay, bandReverbGain, bandReverbMix,
-    clatterActive, clatterPoolIds, clatterDensity, clatterPitchSpread,
-    clatterPanSpread, clatterDopplerAmount, clatterReverbAmount,
-    clatterStutterProb, clatterGain,
     freezeActive, freezePos, freezeGrain, freezeMix, freezeGainVal, freezePitch, freezeVoices, freezePhase,
     effectOrder,
     modulators,
@@ -1289,6 +1147,84 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
     }
   }, [buffer, getAudioCtx, ensureEffects])
 
+  // Reset every effect parameter back to its defaultVoice() value. Doesn't
+  // touch transport (tempo / pitch / gain), loaded sample, or loop region.
+  const reset = useCallback(() => {
+    const d = defaultVoice()
+    setSatActive(d.satActive); setSaturation(d.saturation)
+    setWowActive(d.wowActive); setWowRate(d.wowRate); setWowDepth(d.wowDepth)
+    setFilterActive(d.filterActive); setFilterType(d.filterType)
+    setFilterHz(d.filterHz); setFilterQ(d.filterQ)
+    setRingActive(d.ringActive); setRingFreq(d.ringFreq); setRingAmount(d.ringAmount)
+    setFlangerActive(d.flangerActive); setFlangerRate(d.flangerRate)
+    setFlangerDepth(d.flangerDepth); setFlangerFb(d.flangerFb); setFlangerMix(d.flangerMix)
+    setTremActive(d.tremActive); setTremRate(d.tremRate); setTremDepth(d.tremDepth)
+    setPanActive(d.panActive); setPanRate(d.panRate); setPanDepth(d.panDepth)
+    setPanCenter(d.panCenter); setPanWave(d.panWave)
+    setDelayActive(d.delayActive); setDelayTime(d.delayTime); setDelayFb(d.delayFb); setWet(d.wet)
+    setReverbActive(d.reverbActive); setReverbSize(d.reverbSize); setReverbWet(d.reverbWet)
+    setGranActive(d.granActive); setGranSize(d.granSize); setGranDensity(d.granDensity)
+    setGranPos(d.granPos); setGranDrift(d.granDrift); setGranSpray(d.granSpray)
+    setGranPitch(d.granPitch); setGranPitchSpread(d.granPitchSpread); setGranGain(d.granGain)
+    setGranConstQ(d.granConstQ); setGranCQBands(d.granCQBands); setGranCQResonance(d.granCQResonance)
+    setDopplerActive(d.dopplerActive); setDopplerSpeed(d.dopplerSpeed)
+    setDopplerRange(d.dopplerRange); setDopplerMinDist(d.dopplerMinDist); setDopplerMix(d.dopplerMix)
+    setBandDopplerActive(d.bandDopplerActive); setBandDopplerBands(d.bandDopplerBands)
+    setBandDopplerSpeed(d.bandDopplerSpeed); setBandDopplerSpread(d.bandDopplerSpread)
+    setBandDopplerPanWidth(d.bandDopplerPanWidth); setBandDopplerDistance(d.bandDopplerDistance)
+    setBandDopplerGain(d.bandDopplerGain); setBandDopplerMix(d.bandDopplerMix)
+    setBandReverbActive(d.bandReverbActive); setBandReverbBands(d.bandReverbBands)
+    setBandReverbSize(d.bandReverbSize); setBandReverbSpread(d.bandReverbSpread)
+    setBandReverbDecay(d.bandReverbDecay); setBandReverbGain(d.bandReverbGain)
+    setBandReverbMix(d.bandReverbMix)
+    setFreezeActive(d.freezeActive); setFreezePos(d.freezePos); setFreezeGrain(d.freezeGrain)
+    setFreezeMix(d.freezeMix); setFreezeGainVal(d.freezeGainVal); setFreezePitch(d.freezePitch)
+    setFreezeVoices(d.freezeVoices); setFreezePhase(d.freezePhase)
+    setModulators({})
+  }, [])
+
+  // Musical-range randomization: picks sensible values for each parameter and
+  // toggles each effect independently with a per-effect probability so the
+  // variation stays playable rather than chaotic. Skips transport and loop.
+  const randomize = useCallback(() => {
+    const rnd = (min, max) => min + Math.random() * (max - min)
+    const rndLog = (min, max) => Math.exp(rnd(Math.log(min), Math.log(max)))
+    const pick = (arr) => arr[Math.floor(Math.random() * arr.length)]
+    const bool = (p = 0.5) => Math.random() < p
+
+    setSatActive(bool(0.5)); setSaturation(rnd(0, 0.5))
+    setWowActive(bool(0.4)); setWowRate(rnd(0, 4)); setWowDepth(rnd(0, 0.5))
+    setFilterActive(bool(0.7))
+    setFilterType(pick(['lowpass', 'highpass', 'bandpass', 'notch']))
+    setFilterHz(rndLog(200, 12000)); setFilterQ(rnd(0.5, 6))
+    setRingActive(bool(0.25)); setRingFreq(rndLog(30, 1000)); setRingAmount(rnd(0, 0.5))
+    setFlangerActive(bool(0.4)); setFlangerRate(rnd(0.05, 2))
+    setFlangerDepth(rnd(0, 0.6)); setFlangerFb(rnd(0, 0.5)); setFlangerMix(rnd(0, 0.6))
+    setTremActive(bool(0.35)); setTremRate(rnd(0.3, 8)); setTremDepth(rnd(0, 0.5))
+    setPanActive(bool(0.5)); setPanRate(rnd(0.1, 4))
+    setPanDepth(rnd(0, 0.8)); setPanCenter(rnd(-0.5, 0.5))
+    setPanWave(pick(['sine', 'triangle', 'square', 'sawtooth']))
+    setDelayActive(bool(0.5)); setDelayTime(rnd(0.05, 0.6))
+    setDelayFb(rnd(0, 0.55)); setWet(rnd(0, 0.5))
+    setReverbActive(bool(0.5)); setReverbSize(rnd(0.4, 3)); setReverbWet(rnd(0, 0.5))
+    setGranActive(bool(0.35)); setGranSize(rnd(0.02, 0.2))
+    setGranDensity(rnd(4, 40)); setGranPos(rnd(0, 1))
+    setGranSpray(rnd(0, 0.2)); setGranPitch(Math.round(rnd(-12, 12)))
+    setGranPitchSpread(rnd(0, 8)); setGranGain(rnd(0.6, 1.4))
+    setFreezeActive(bool(0.25)); setFreezePos(rnd(0, 1))
+    setFreezeGrain(rnd(0.01, 0.5)); setFreezeMix(rnd(0, 0.7))
+    setFreezePitch(Math.round(rnd(-12, 12)))
+    setDopplerActive(bool(0.3)); setDopplerSpeed(rnd(0.1, 2))
+    setDopplerRange(rnd(2, 20)); setDopplerMix(rnd(0, 0.6))
+    setBandDopplerActive(bool(0.3)); setBandDopplerBands(Math.round(rnd(4, 10)))
+    setBandDopplerSpeed(rnd(0.1, 1.5)); setBandDopplerSpread(rnd(0.3, 1))
+    setBandDopplerPanWidth(rnd(0.4, 1)); setBandDopplerDistance(rnd(0.5, 2))
+    setBandDopplerMix(rnd(0, 0.5))
+    setBandReverbActive(bool(0.3)); setBandReverbBands(Math.round(rnd(4, 10)))
+    setBandReverbSize(rnd(0.5, 3)); setBandReverbSpread(rnd(0, 1))
+    setBandReverbDecay(rnd(1.5, 5)); setBandReverbMix(rnd(0, 0.4))
+  }, [])
+
   const toggleReverse = useCallback(() => {
     const newRev = !reversedRef.current
     reversedRef.current = newRev
@@ -1392,16 +1328,6 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
     bandReverbDecay, setBandReverbDecay,
     bandReverbGain, setBandReverbGain,
     bandReverbMix, setBandReverbMix,
-    // clatter
-    clatterActive, setClatterActive,
-    clatterPoolIds, setClatterPoolIds,
-    clatterDensity, setClatterDensity,
-    clatterPitchSpread, setClatterPitchSpread,
-    clatterPanSpread, setClatterPanSpread,
-    clatterDopplerAmount, setClatterDopplerAmount,
-    clatterReverbAmount, setClatterReverbAmount,
-    clatterStutterProb, setClatterStutterProb,
-    clatterGain, setClatterGain,
     // freeze
     freezeActive, setFreezeActive,
     freezePos, setFreezePos,
@@ -1416,5 +1342,6 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
     // modulation
     modulators, setModulator,
     play, stop, onScrub, toggleReverse, loadFromPool,
+    randomize, reset,
   }
 }

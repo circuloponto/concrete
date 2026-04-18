@@ -1,7 +1,7 @@
 import React, { useRef, useState, useEffect } from 'react'
 import { DEFAULT_MOD } from './modulation'
 import { useStore } from './state'
-import { themeColor, decodeFile } from './audio'
+import { themeColor } from './audio'
 
 // XY pad: waveform background, crosshair at (pos, grain), draggable
 function FreezeXY({ voice }) {
@@ -78,7 +78,7 @@ const EFFECT_LABELS = {
   saturation: 'Saturation', wow: 'Wow/Flutter', filter: 'Filter', ringmod: 'Ring Mod', tremolo: 'Tremolo',
   flanger: 'Flanger', delay: 'Tape Delay', reverb: 'Reverb', granulator: 'Granulator', freeze: 'Freeze',
   doppler: 'Doppler', banddoppler: 'Band Doppler', bandreverb: 'Band Reverb',
-  clatter: 'Clatter', autopan: 'Auto Pan',
+  autopan: 'Auto Pan',
 }
 
 function ChainOrder({ voice }) {
@@ -211,132 +211,6 @@ function ModRow({ voice, pKey, label, min, max, step, value, onChange, format, u
   )
 }
 
-function ClatterPanel({ voice }) {
-  const v = voice
-  const { pool, addPoolItem, getAudioCtx } = useStore()
-  const [dragOver, setDragOver] = useState(false)
-
-  const addIds = (ids) => {
-    if (!ids.length) return
-    v.setClatterPoolIds(Array.from(new Set([...(v.clatterPoolIds || []), ...ids])))
-  }
-  const removeId = (id) => v.setClatterPoolIds((v.clatterPoolIds || []).filter(x => x !== id))
-
-  const onDrop = async (e) => {
-    e.preventDefault(); e.stopPropagation(); setDragOver(false)
-    // pool item drag
-    const poolId = e.dataTransfer.getData('poolId')
-    if (poolId) { addIds([poolId]); return }
-    // OS files — import to main pool and add to clatter
-    const files = Array.from(e.dataTransfer.files || [])
-      .filter(f => /\.(wav|mp3|aiff?|ogg|flac|m4a|webm)$/i.test(f.name) || (f.type && f.type.startsWith('audio/')))
-    if (!files.length) return
-    const ctx = getAudioCtx()
-    const newIds = []
-    for (const f of files) {
-      try {
-        const buf = await decodeFile(f, ctx)
-        const id = addPoolItem(f.name.replace(/\.[^.]+$/, ''), buf, 'imported')
-        newIds.push(id)
-      } catch (err) { console.error('decode fail', f.name, err) }
-    }
-    addIds(newIds)
-  }
-
-  const onAddFromSelect = (e) => {
-    const selected = Array.from(e.target.selectedOptions).map(o => o.value).filter(Boolean)
-    addIds(selected)
-    e.target.value = ''
-  }
-
-  const fmtPct = (x) => `${Math.round(x * 100)}%`
-
-  return (
-    <div className="panel" style={{ flex: '0 0 340px' }}>
-      <h4>Clatter
-        <button
-          className={'tiny-toggle' + (v.clatterActive ? ' active' : '')}
-          onClick={() => v.setClatterActive(!v.clatterActive)}
-        >{v.clatterActive ? 'ON' : 'OFF'}</button>
-      </h4>
-
-      <div
-        onDragOver={(e) => { e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; setDragOver(true) }}
-        onDragLeave={() => setDragOver(false)}
-        onDrop={onDrop}
-        style={{
-          border: `1px dashed ${dragOver ? 'var(--hl)' : 'var(--border)'}`,
-          background: dragOver ? 'var(--hl-wash)' : 'transparent',
-          padding: 8,
-          marginBottom: 8,
-          textAlign: 'center',
-          color: 'var(--dim)',
-          fontSize: 10,
-          textTransform: 'uppercase',
-          letterSpacing: 1,
-        }}
-      >drop pool items or audio files</div>
-
-      <select
-        multiple
-        size={Math.min(5, Math.max(3, pool.length))}
-        value={[]}
-        onChange={onAddFromSelect}
-        style={{
-          width: '100%', marginBottom: 8, background: 'transparent',
-          color: 'var(--fg)', border: '1px solid var(--border)',
-          fontFamily: 'inherit', fontSize: 11, padding: 3,
-        }}
-      >
-        {pool.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
-      </select>
-
-      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginBottom: 8, minHeight: 20 }}>
-        {(v.clatterPoolIds || []).map(id => {
-          const item = pool.find(p => p.id === id)
-          return (
-            <span key={id} style={{
-              fontSize: 10, padding: '2px 6px', border: '1px solid var(--hl)',
-              color: 'var(--hl)', display: 'inline-flex', gap: 4, alignItems: 'center',
-            }}>
-              {item ? item.name : '(missing)'}
-              <button
-                onClick={() => removeId(id)}
-                style={{ background: 'transparent', border: 'none', color: 'var(--hl)', padding: 0, cursor: 'pointer', fontSize: 10 }}
-              >✕</button>
-            </span>
-          )
-        })}
-        {(!v.clatterPoolIds || v.clatterPoolIds.length === 0) && (
-          <span style={{ color: 'var(--dim)', fontSize: 10 }}>no sources yet</span>
-        )}
-      </div>
-
-      <Row label="Density" value={v.clatterDensity.toFixed(2)} unit="/s">
-        <Slider min={0.05} max={20} step={0.05} value={v.clatterDensity} onChange={v.setClatterDensity} />
-      </Row>
-      <Row label="Pitch spread" value={v.clatterPitchSpread.toFixed(0)} unit="st">
-        <Slider min={0} max={36} step={1} value={v.clatterPitchSpread} onChange={v.setClatterPitchSpread} />
-      </Row>
-      <Row label="Pan spread" value={fmtPct(v.clatterPanSpread)}>
-        <Slider min={0} max={1} step={0.01} value={v.clatterPanSpread} onChange={v.setClatterPanSpread} />
-      </Row>
-      <Row label="Doppler" value={fmtPct(v.clatterDopplerAmount)}>
-        <Slider min={0} max={1} step={0.01} value={v.clatterDopplerAmount} onChange={v.setClatterDopplerAmount} />
-      </Row>
-      <Row label="Reverb" value={fmtPct(v.clatterReverbAmount)}>
-        <Slider min={0} max={1} step={0.01} value={v.clatterReverbAmount} onChange={v.setClatterReverbAmount} />
-      </Row>
-      <Row label="Stutter" value={fmtPct(v.clatterStutterProb)}>
-        <Slider min={0} max={1} step={0.01} value={v.clatterStutterProb} onChange={v.setClatterStutterProb} />
-      </Row>
-      <Row label="Gain" value={v.clatterGain.toFixed(2)} unit="×">
-        <Slider min={0} max={3} step={0.01} value={v.clatterGain} onChange={v.setClatterGain} />
-      </Row>
-      <div className="hint">independent sequencer · plays even when voice is stopped</div>
-    </div>
-  )
-}
 
 export function VoiceControls({ voice }) {
   const { pool } = useStore()
@@ -403,13 +277,22 @@ export function VoiceControls({ voice }) {
       <ChainOrder voice={v} />
       <div className="voice-controls-header">
         <span>editing <b>Voice {v.voiceNumber}</b></span>
+        <button
+          onClick={v.randomize}
+          title="randomize all effect parameters"
+          style={{ padding: '4px 8px', fontSize: 10 }}
+        >🎲 Randomize</button>
+        <button
+          onClick={v.reset}
+          title="reset all effects to defaults"
+          style={{ padding: '4px 8px', fontSize: 10 }}
+        >↺ Reset</button>
         <div className="sub-tabs" data-tutorial="sub-tabs">
           <button className={sub === 'tape' ? 'active' : ''} onClick={() => switchSub('tape')}>Tape</button>
           <button className={sub === 'filter' ? 'active' : ''} onClick={() => switchSub('filter')}>Filter</button>
           <button className={sub === 'mod' ? 'active' : ''} onClick={() => switchSub('mod')}>Mod</button>
           <button className={sub === 'grain' ? 'active' : ''} onClick={() => switchSub('grain')}>Grain</button>
           <button className={sub === 'freeze' ? 'active' : ''} onClick={() => switchSub('freeze')}>Freeze</button>
-          <button className={sub === 'clatter' ? 'active' : ''} onClick={() => switchSub('clatter')}>Clatter</button>
           <button className={sub === 'motion' ? 'active' : ''} onClick={() => switchSub('motion')}>Motion</button>
           <button className={sub === 'space' ? 'active' : ''} onClick={() => switchSub('space')}>Space</button>
           <button className={sub === 'loop' ? 'active' : ''} onClick={() => switchSub('loop')}>Loop</button>
@@ -612,8 +495,6 @@ export function VoiceControls({ voice }) {
             </Row>
           </div>
         </>}
-
-        {sub === 'clatter' && <ClatterPanel voice={v} />}
 
         {sub === 'motion' && <>
           <div className="panel">
