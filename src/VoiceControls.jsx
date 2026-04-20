@@ -1,4 +1,4 @@
-import React, { useRef, useState, useEffect } from 'react'
+import React, { useRef, useState, useEffect, useLayoutEffect } from 'react'
 import { DEFAULT_MOD } from './modulation'
 import { useStore } from './state'
 import { themeColor } from './audio'
@@ -81,38 +81,168 @@ const EFFECT_LABELS = {
   autopan: 'Auto Pan',
 }
 
-function ChainOrder({ voice }) {
-  const dragIdx = useRef(null)
+const EFFECT_ACTIVE_KEYS = {
+  saturation: ['satActive', 'setSatActive'],
+  wow: ['wowActive', 'setWowActive'],
+  filter: ['filterActive', 'setFilterActive'],
+  ringmod: ['ringActive', 'setRingActive'],
+  tremolo: ['tremActive', 'setTremActive'],
+  flanger: ['flangerActive', 'setFlangerActive'],
+  delay: ['delayActive', 'setDelayActive'],
+  reverb: ['reverbActive', 'setReverbActive'],
+  freeze: ['freezeActive', 'setFreezeActive'],
+  doppler: ['dopplerActive', 'setDopplerActive'],
+  banddoppler: ['bandDopplerActive', 'setBandDopplerActive'],
+  bandreverb: ['bandReverbActive', 'setBandReverbActive'],
+  autopan: ['panActive', 'setPanActive'],
+  granulator: ['granActive', 'setGranActive'],
+}
+
+function ChainModal({ voice, onClose }) {
   const order = voice.effectOrder || []
-  const onDragStart = (e, i) => { dragIdx.current = i; e.dataTransfer.effectAllowed = 'move' }
-  const onDragOver = (e) => e.preventDefault()
-  const onDrop = (e, i) => {
-    e.preventDefault()
-    const from = dragIdx.current
-    if (from === null || from === i) return
-    const newOrder = [...order]
-    const [item] = newOrder.splice(from, 1)
-    newOrder.splice(i, 0, item)
-    voice.setEffectOrder(newOrder)
-    dragIdx.current = null
+  const [dragName, setDragName] = useState(null)
+  const [mounted, setMounted] = useState(false)
+  const [closing, setClosing] = useState(false)
+  const itemsRef = useRef({})
+  const prevRectsRef = useRef({})
+  const closeTimer = useRef(null)
+
+  useEffect(() => {
+    const r = requestAnimationFrame(() => setMounted(true))
+    return () => cancelAnimationFrame(r)
+  }, [])
+
+  const close = () => {
+    if (closing) return
+    setClosing(true)
+    closeTimer.current = setTimeout(onClose, 180)
   }
+  useEffect(() => () => { if (closeTimer.current) clearTimeout(closeTimer.current) }, [])
+
+  useEffect(() => {
+    const onKey = (e) => { if (e.key === 'Escape') close() }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [])
+
+  useLayoutEffect(() => {
+    const prev = prevRectsRef.current
+    const now = {}
+    order.forEach(name => {
+      const el = itemsRef.current[name]
+      if (el) now[name] = el.getBoundingClientRect()
+    })
+    order.forEach(name => {
+      const p = prev[name], n = now[name]
+      if (!p || !n) return
+      const dy = p.top - n.top
+      if (Math.abs(dy) > 0.5) {
+        const el = itemsRef.current[name]
+        el.style.transition = 'none'
+        el.style.transform = `translateY(${dy}px)`
+        requestAnimationFrame(() => {
+          el.style.transition = 'transform 600ms cubic-bezier(.2,.8,.2,1)'
+          el.style.transform = 'translateY(0)'
+        })
+      }
+    })
+    prevRectsRef.current = now
+  }, [order.join('|')])
+
+  const startDrag = (e, idx) => {
+    if (e.button !== 0) return
+    const initialOrder = voice.effectOrder
+    const name = initialOrder[idx]
+    // Snapshot slot rects once — they represent visual positions 0..n-1,
+    // which don't change as the order array mutates (items FLIP between slots).
+    const slots = initialOrder.map(n => {
+      const el = itemsRef.current[n]
+      const r = el.getBoundingClientRect()
+      return { top: r.top, bottom: r.bottom }
+    })
+    let currentIdx = idx
+    let started = false
+    const onMove = (ev) => {
+      if (!started) { started = true; setDragName(name) }
+      const y = ev.clientY
+      let target = currentIdx
+      if (y < slots[0].top) target = 0
+      else if (y > slots[slots.length - 1].bottom) target = slots.length - 1
+      else {
+        for (let i = 0; i < slots.length; i++) {
+          if (y >= slots[i].top && y <= slots[i].bottom) { target = i; break }
+        }
+      }
+      if (target !== currentIdx) {
+        const cur = voice.effectOrder
+        const newOrder = [...cur]
+        const [it] = newOrder.splice(currentIdx, 1)
+        newOrder.splice(target, 0, it)
+        voice.setEffectOrder(newOrder)
+        currentIdx = target
+      }
+    }
+    const onUp = () => {
+      setDragName(null)
+      window.removeEventListener('pointermove', onMove)
+      window.removeEventListener('pointerup', onUp)
+    }
+    window.addEventListener('pointermove', onMove)
+    window.addEventListener('pointerup', onUp)
+  }
+
+  const cls = 'chain-modal-backdrop' + (mounted && !closing ? ' open' : '')
   return (
-    <div className="chain-order">
-      <span className="chain-label">chain</span>
-      {order.map((name, i) => (
-        <React.Fragment key={name}>
-          {i > 0 && <span className="chain-arrow">→</span>}
-          <div
-            className="chain-item"
-            draggable
-            onDragStart={(e) => onDragStart(e, i)}
-            onDragOver={onDragOver}
-            onDrop={(e) => onDrop(e, i)}
-            title={`${name} — drag to reorder`}
-          >{EFFECT_LABELS[name] || name}</div>
-        </React.Fragment>
-      ))}
+    <div className={cls} onClick={close}>
+      <div className="chain-modal" onClick={e => e.stopPropagation()}>
+        <div className="chain-modal-header">
+          <h3>signal chain</h3>
+          <button className="chain-modal-close" onClick={close} title="close (Esc)">×</button>
+        </div>
+        <div className="chain-modal-hint">drag to reorder · shift-click to bypass</div>
+        <div className="chain-modal-list">
+          {order.map((name, i) => {
+            const keys = EFFECT_ACTIVE_KEYS[name]
+            const active = keys ? !!voice[keys[0]] : true
+            const onClick = (e) => {
+              if (!e.shiftKey || !keys) return
+              e.preventDefault()
+              voice[keys[1]](!voice[keys[0]])
+            }
+            const dragging = dragName === name
+            return (
+              <div
+                key={name}
+                ref={el => { if (el) itemsRef.current[name] = el; else delete itemsRef.current[name] }}
+                className={'chain-modal-item' + (active ? '' : ' inactive') + (dragging ? ' dragging' : '')}
+                onPointerDown={(e) => startDrag(e, i)}
+                onClick={onClick}
+                title="drag up/down to reorder · shift-click to toggle"
+              >
+                <span className="chain-modal-num">{i + 1}</span>
+                <span className="chain-modal-handle" aria-hidden="true">⋮⋮</span>
+                <span className="chain-modal-name">{EFFECT_LABELS[name] || name}</span>
+                <span className={'chain-modal-state' + (active ? ' on' : '')}>{active ? 'on' : 'off'}</span>
+              </div>
+            )
+          })}
+        </div>
+      </div>
     </div>
+  )
+}
+
+function ChainButton({ voice }) {
+  const [open, setOpen] = useState(false)
+  return (
+    <>
+      <button
+        className="chain-btn"
+        onClick={() => setOpen(true)}
+        title="signal chain order"
+      >▤ Chain</button>
+      {open && <ChainModal voice={voice} onClose={() => setOpen(false)} />}
+    </>
   )
 }
 
@@ -274,9 +404,9 @@ export function VoiceControls({ voice }) {
 
   return (
     <div className="voice-controls">
-      <ChainOrder voice={v} />
       <div className="voice-controls-header">
         <span>editing <b>Voice {v.voiceNumber}</b></span>
+        <ChainButton voice={v} />
         <button
           onClick={v.randomize}
           title="randomize all effect parameters"

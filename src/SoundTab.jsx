@@ -92,6 +92,35 @@ export function SoundTab({ selectedPoolId }) {
     if (recRef.current) { recRef.current.stop(); recRef.current = null }
     setRecording(false)
   }
+  const startRecordOneShot = () => {
+    const v = focusedVoice
+    if (!v || !v.buffer) return
+    const rec = new MediaRecorder(audioNodes.msDest.stream)
+    const chunks = []
+    rec.ondataavailable = (e) => chunks.push(e.data)
+    rec.onstop = async () => {
+      const blob = new Blob(chunks)
+      const buf = await getAudioCtx().decodeAudioData(await blob.arrayBuffer())
+      addPoolItem(`oneshot_${Date.now().toString(36)}`, buf, 'capture')
+    }
+    rec.start()
+    recRef.current = rec
+    setRecording(true)
+    v.play({
+      oneShot: true,
+      onEnded: () => {
+        // tail for reverb/delay decay, then stop
+        setTimeout(() => {
+          if (recRef.current === rec) {
+            try { rec.stop() } catch {}
+            recRef.current = null
+            setRecording(false)
+            try { v.stop() } catch {}
+          }
+        }, 400)
+      },
+    })
+  }
 
   // drag-scroll on the row
   const rowRef = useRef(null)
@@ -171,7 +200,15 @@ export function SoundTab({ selectedPoolId }) {
         <div style={{ width: 12 }} />
         <span data-tutorial="rec">
           {!recording
-            ? <button onClick={startRecord}>● Rec mix → pool</button>
+            ? <>
+                <button onClick={startRecord}>● Rec mix → pool</button>
+                <button
+                  onClick={startRecordOneShot}
+                  disabled={!focusedVoice?.buffer}
+                  title="play focused voice once and capture into pool"
+                  style={{ marginLeft: 4 }}
+                >● Rec one-shot</button>
+              </>
             : <button className="recording" onClick={stopRecord}>Stop rec</button>}
         </span>
       </div>

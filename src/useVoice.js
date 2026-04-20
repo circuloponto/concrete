@@ -811,8 +811,10 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
   const loopBoundsRef = useRef({ start: loopStart, end: loopEnd })
   loopBoundsRef.current = { start: loopStart, end: loopEnd }
 
-  const play = useCallback(() => {
+  const play = useCallback((opts) => {
     if (!buffer) return
+    const oneShot = !!opts?.oneShot
+    const onEnded = opts?.onEnded
     if (shifterRef.current) { try { shifterRef.current.disconnect() } catch {}; shifterRef.current = null }
     if (rafRef.current) cancelAnimationFrame(rafRef.current)
     const ctx = getAudioCtx()
@@ -831,13 +833,19 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
       const { start: ls0, end: le0 } = loopBoundsRef.current
       const node = ctx.createBufferSource()
       node.buffer = src
-      node.loop = true
+      node.loop = !oneShot
       node.loopStart = Math.max(0, Math.min(dur, ls0 * dur))
       node.loopEnd = Math.max(node.loopStart + 0.01, Math.min(dur, le0 * dur))
       node.connect(nodes.shifterBus)
       const t0 = ctx.currentTime
       const startOffset = node.loopStart
-      node.start(0, startOffset)
+      if (oneShot) {
+        const span = Math.max(0.01, node.loopEnd - node.loopStart)
+        node.start(0, startOffset, span)
+        node.onended = () => { if (onEnded) onEnded() }
+      } else {
+        node.start(0, startOffset)
+      }
       // Shim matching the PitchShifter surface the rest of useVoice expects.
       const shim = {
         _kind: 'source',
@@ -888,6 +896,8 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
       shifter.tempo = tempo
       shifter.pitchSemitones = pitch
       shifter.connect(nodes.shifterBus)
+      shifter._oneShot = oneShot
+      shifter._onEnded = onEnded
       shifterRef.current = shifter
       requestAnimationFrame(() => {
         if (shifterRef.current === shifter) shifter.percentagePlayed = loopBoundsRef.current.start * 100
@@ -906,6 +916,11 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
       setPosition(p)
       const { start: ls, end: le } = loopBoundsRef.current
       if (sh._kind !== 'source' && (p >= le || p >= 0.999)) {
+        if (sh._oneShot) {
+          const cb = sh._onEnded
+          if (cb) cb()
+          return
+        }
         sh.percentagePlayed = ls * 100
       }
       rafRef.current = requestAnimationFrame(tick)
@@ -1148,9 +1163,10 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
   }, [buffer, getAudioCtx, ensureEffects])
 
   // Reset every effect parameter back to its defaultVoice() value. Doesn't
-  // touch transport (tempo / pitch / gain), loaded sample, or loop region.
+  // touch the loaded sample or loop region.
   const reset = useCallback(() => {
     const d = defaultVoice()
+    setTempo(d.tempo); setPitch(d.pitch); setVoiceGain(d.voiceGain)
     setSatActive(d.satActive); setSaturation(d.saturation)
     setWowActive(d.wowActive); setWowRate(d.wowRate); setWowDepth(d.wowDepth)
     setFilterActive(d.filterActive); setFilterType(d.filterType)
@@ -1192,6 +1208,10 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
     const pick = (arr) => arr[Math.floor(Math.random() * arr.length)]
     const bool = (p = 0.5) => Math.random() < p
 
+    // Tape transport — kept in musical range so it doesn't get unplayable.
+    setTempo(rndLog(0.5, 2))
+    setPitch(Math.round(rnd(-12, 12)))
+    setVoiceGain(rnd(0.7, 1.2))
     setSatActive(bool(0.5)); setSaturation(rnd(0, 0.5))
     setWowActive(bool(0.4)); setWowRate(rnd(0, 4)); setWowDepth(rnd(0, 0.5))
     setFilterActive(bool(0.7))
