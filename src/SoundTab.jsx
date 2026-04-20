@@ -11,14 +11,13 @@ export function SoundTab({ selectedPoolId }) {
     const busInput = ctx.createGain(); busInput.gain.value = 1
     const master = ctx.createGain(); master.gain.value = 1
     const feedback = ctx.createGain(); feedback.gain.value = 0
+    const msDest = ctx.createMediaStreamDestination()
     busInput.connect(master)
     master.connect(ctx.destination)
+    master.connect(msDest)
     master.connect(feedback)
     feedback.connect(busInput)
-    // msDest is created lazily during recording — keeping it permanently
-    // attached forces Android Chrome into "communication" audio session,
-    // which routes Bluetooth through HFP/SCO and silences playback.
-    return { busInput, master, feedback, msDest: null, mixer: busInput }
+    return { busInput, master, feedback, msDest, mixer: busInput }
   })
 
   // live howlround amount
@@ -76,24 +75,11 @@ export function SoundTab({ selectedPoolId }) {
 
   const focusedVoice = voices[focused - 1] || voices[0]
 
-  const attachMsDest = () => {
-    if (!audioNodes.msDest) {
-      audioNodes.msDest = getAudioCtx().createMediaStreamDestination()
-    }
-    try { audioNodes.master.connect(audioNodes.msDest) } catch {}
-    return audioNodes.msDest
-  }
-  const detachMsDest = () => {
-    if (!audioNodes.msDest) return
-    try { audioNodes.master.disconnect(audioNodes.msDest) } catch {}
-  }
   const startRecord = () => {
-    const dest = attachMsDest()
-    const rec = new MediaRecorder(dest.stream)
+    const rec = new MediaRecorder(audioNodes.msDest.stream)
     const chunks = []
     rec.ondataavailable = (e) => chunks.push(e.data)
     rec.onstop = async () => {
-      detachMsDest()
       const blob = new Blob(chunks)
       const buf = await getAudioCtx().decodeAudioData(await blob.arrayBuffer())
       addPoolItem(`capture_${Date.now().toString(36)}`, buf, 'capture')
@@ -109,12 +95,10 @@ export function SoundTab({ selectedPoolId }) {
   const startRecordOneShot = () => {
     const v = focusedVoice
     if (!v || !v.buffer) return
-    const dest = attachMsDest()
-    const rec = new MediaRecorder(dest.stream)
+    const rec = new MediaRecorder(audioNodes.msDest.stream)
     const chunks = []
     rec.ondataavailable = (e) => chunks.push(e.data)
     rec.onstop = async () => {
-      detachMsDest()
       const blob = new Blob(chunks)
       const buf = await getAudioCtx().decodeAudioData(await blob.arrayBuffer())
       addPoolItem(`oneshot_${Date.now().toString(36)}`, buf, 'capture')
