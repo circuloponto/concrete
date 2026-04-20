@@ -98,7 +98,36 @@ const EFFECT_ACTIVE_KEYS = {
   granulator: ['granActive', 'setGranActive'],
 }
 
-function ChainModal({ voice, onClose }) {
+// Default mix/depth/wet to apply when an effect is toggled on from the
+// chain modal so the user immediately hears it without diving into its panel.
+const EFFECT_MIX_SETTER = {
+  saturation: 'setSaturation',
+  wow: 'setWowDepth',
+  ringmod: 'setRingAmount',
+  tremolo: 'setTremDepth',
+  flanger: 'setFlangerMix',
+  autopan: 'setPanDepth',
+  delay: 'setWet',
+  reverb: 'setReverbWet',
+  granulator: 'setGranGain',
+  freeze: 'setFreezeMix',
+  doppler: 'setDopplerMix',
+  banddoppler: 'setBandDopplerMix',
+  bandreverb: 'setBandReverbMix',
+}
+
+// Maps each chain-order effect to the sub-tab that contains its controls.
+const EFFECT_SUBTAB = {
+  saturation: 'tape', wow: 'tape',
+  filter: 'filter',
+  ringmod: 'mod', flanger: 'mod', tremolo: 'mod', autopan: 'mod',
+  delay: 'space', reverb: 'space',
+  granulator: 'grain',
+  freeze: 'freeze',
+  doppler: 'motion', banddoppler: 'motion', bandreverb: 'motion',
+}
+
+function ChainModal({ voice, onClose, onPickEffect }) {
   const order = voice.effectOrder || []
   const [dragName, setDragName] = useState(null)
   const [mounted, setMounted] = useState(false)
@@ -106,6 +135,9 @@ function ChainModal({ voice, onClose }) {
   const itemsRef = useRef({})
   const prevRectsRef = useRef({})
   const closeTimer = useRef(null)
+  // After a drag, the browser still fires a click on the same element.
+  // We suppress that one click so a drop doesn't navigate + close the modal.
+  const suppressClickRef = useRef(false)
 
   useEffect(() => {
     const r = requestAnimationFrame(() => setMounted(true))
@@ -163,7 +195,7 @@ function ChainModal({ voice, onClose }) {
     let currentIdx = idx
     let started = false
     const onMove = (ev) => {
-      if (!started) { started = true; setDragName(name) }
+      if (!started) { started = true; setDragName(name); suppressClickRef.current = true }
       const y = ev.clientY
       let target = currentIdx
       if (y < slots[0].top) target = 0
@@ -205,9 +237,28 @@ function ChainModal({ voice, onClose }) {
             const keys = EFFECT_ACTIVE_KEYS[name]
             const active = keys ? !!voice[keys[0]] : true
             const onClick = (e) => {
-              if (!e.shiftKey || !keys) return
-              e.preventDefault()
-              voice[keys[1]](!voice[keys[0]])
+              if (suppressClickRef.current) {
+                suppressClickRef.current = false
+                return
+              }
+              if (e.shiftKey && keys) {
+                e.preventDefault()
+                const wasActive = !!voice[keys[0]]
+                voice[keys[1]](!wasActive)
+                // when activating from off, set the effect's mix/depth to 50%
+                // so it's audible immediately
+                if (!wasActive) {
+                  const mixSetter = EFFECT_MIX_SETTER[name]
+                  if (mixSetter && typeof voice[mixSetter] === 'function') {
+                    voice[mixSetter](0.5)
+                  }
+                }
+                return
+              }
+              // plain click: jump to this effect's sub-tab and close modal
+              const subKey = EFFECT_SUBTAB[name]
+              if (subKey && onPickEffect) onPickEffect(subKey)
+              close()
             }
             const dragging = dragName === name
             return (
@@ -217,7 +268,7 @@ function ChainModal({ voice, onClose }) {
                 className={'chain-modal-item' + (active ? '' : ' inactive') + (dragging ? ' dragging' : '')}
                 onPointerDown={(e) => startDrag(e, i)}
                 onClick={onClick}
-                title="drag up/down to reorder · shift-click to toggle"
+                title="click to open · shift-click to toggle · drag to reorder"
               >
                 <span className="chain-modal-num">{i + 1}</span>
                 <span className="chain-modal-handle" aria-hidden="true">⋮⋮</span>
@@ -232,7 +283,7 @@ function ChainModal({ voice, onClose }) {
   )
 }
 
-function ChainButton({ voice }) {
+function ChainButton({ voice, onPickEffect }) {
   const [open, setOpen] = useState(false)
   return (
     <>
@@ -241,7 +292,13 @@ function ChainButton({ voice }) {
         onClick={() => setOpen(true)}
         title="signal chain order"
       >▤ Chain</button>
-      {open && <ChainModal voice={voice} onClose={() => setOpen(false)} />}
+      {open && (
+        <ChainModal
+          voice={voice}
+          onClose={() => setOpen(false)}
+          onPickEffect={onPickEffect}
+        />
+      )}
     </>
   )
 }
@@ -406,7 +463,7 @@ export function VoiceControls({ voice }) {
     <div className="voice-controls">
       <div className="voice-controls-header">
         <span>editing <b>Voice {v.voiceNumber}</b></span>
-        <ChainButton voice={v} />
+        <ChainButton voice={v} onPickEffect={switchSub} />
         <button
           onClick={v.randomize}
           title="randomize all effect parameters"
