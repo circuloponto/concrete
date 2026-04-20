@@ -49,8 +49,10 @@ export function DiffusionTab() {
     if (audioRef.current) return audioRef.current
     const ctx = getAudioCtx()
     const mixer = ctx.createGain(); mixer.gain.value = 1
-    const msDest = ctx.createMediaStreamDestination()
-    mixer.connect(ctx.destination); mixer.connect(msDest)
+    mixer.connect(ctx.destination)
+    // msDest attached lazily during recording (avoids Android Chrome forcing
+    // the page into "communication" audio session and silencing Bluetooth).
+    const msDest = null
     const voices = Array.from({ length: MAX_VOICES }, () => {
       const panner = ctx.createPanner()
       panner.panningModel = 'HRTF'
@@ -98,10 +100,15 @@ export function DiffusionTab() {
   const recRef = useRef(null)
   const startRecord = () => {
     const a = ensureAudio()
+    if (!a.msDest) {
+      a.msDest = getAudioCtx().createMediaStreamDestination()
+    }
+    try { a.mixer.connect(a.msDest) } catch {}
     const rec = new MediaRecorder(a.msDest.stream)
     const chunks = []
     rec.ondataavailable = e => chunks.push(e.data)
     rec.onstop = async () => {
+      try { a.mixer.disconnect(a.msDest) } catch {}
       const blob = new Blob(chunks)
       const buf = await getAudioCtx().decodeAudioData(await blob.arrayBuffer())
       addPoolItem(captureName || `binaural_${Date.now().toString(36)}`, buf, 'diffusion')
