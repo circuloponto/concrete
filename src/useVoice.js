@@ -130,13 +130,17 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
   const [effectOrder, setEffectOrder] = useState(() => {
     const defaults = [
       'saturation', 'wow', 'filter', 'ringmod', 'tremolo', 'flanger', 'delay',
-      'reverb', 'freeze', 'doppler', 'banddoppler', 'autopan',
+      'reverb', 'granulator', 'freeze', 'doppler', 'banddoppler', 'autopan',
     ]
     const existing = initial.effectOrder
     if (!existing) return defaults
-    // migrate: add banddoppler / bandreverb next to doppler if missing (for
-    // sessions saved before those effects existed)
+    // migrate: add banddoppler / bandreverb / granulator next to neighbours if
+    // missing (for sessions saved before those effects were in the chain).
     let arr = [...existing]
+    if (!arr.includes('granulator')) {
+      const idx = arr.indexOf('reverb')
+      arr.splice(idx >= 0 ? idx + 1 : arr.length, 0, 'granulator')
+    }
     if (!arr.includes('banddoppler')) {
       const idx = arr.indexOf('doppler')
       arr.splice(idx >= 0 ? idx + 1 : arr.length, 0, 'banddoppler')
