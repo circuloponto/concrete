@@ -236,6 +236,17 @@ function ChainModal({ voice, onClose, onPickEffect }) {
           {order.map((name, i) => {
             const keys = EFFECT_ACTIVE_KEYS[name]
             const active = keys ? !!voice[keys[0]] : true
+            const toggleActive = () => {
+              if (!keys) return
+              const wasActive = !!voice[keys[0]]
+              voice[keys[1]](!wasActive)
+              if (!wasActive) {
+                const mixSetter = EFFECT_MIX_SETTER[name]
+                if (mixSetter && typeof voice[mixSetter] === 'function') {
+                  voice[mixSetter](0.5)
+                }
+              }
+            }
             const onClick = (e) => {
               if (suppressClickRef.current) {
                 suppressClickRef.current = false
@@ -243,22 +254,16 @@ function ChainModal({ voice, onClose, onPickEffect }) {
               }
               if (e.shiftKey && keys) {
                 e.preventDefault()
-                const wasActive = !!voice[keys[0]]
-                voice[keys[1]](!wasActive)
-                // when activating from off, set the effect's mix/depth to 50%
-                // so it's audible immediately
-                if (!wasActive) {
-                  const mixSetter = EFFECT_MIX_SETTER[name]
-                  if (mixSetter && typeof voice[mixSetter] === 'function') {
-                    voice[mixSetter](0.5)
-                  }
-                }
+                toggleActive()
                 return
               }
-              // plain click: jump to this effect's sub-tab and close modal
               const subKey = EFFECT_SUBTAB[name]
               if (subKey && onPickEffect) onPickEffect(subKey)
               close()
+            }
+            const onPillClick = (e) => {
+              e.stopPropagation()
+              toggleActive()
             }
             const dragging = dragName === name
             return (
@@ -277,7 +282,13 @@ function ChainModal({ voice, onClose, onPickEffect }) {
                   title="drag to reorder"
                 >⋮⋮</span>
                 <span className="chain-modal-name">{EFFECT_LABELS[name] || name}</span>
-                <span className={'chain-modal-state' + (active ? ' on' : '')}>{active ? 'on' : 'off'}</span>
+                <button
+                  type="button"
+                  className={'chain-modal-state' + (active ? ' on' : '')}
+                  onClick={onPillClick}
+                  onPointerDown={(e) => e.stopPropagation()}
+                  title={active ? 'tap to bypass' : 'tap to enable'}
+                >{active ? 'on' : 'off'}</button>
               </div>
             )
           })}

@@ -545,14 +545,19 @@ input[type="color"] { padding: 0; width: 28px; height: 22px; border: 1px solid v
   text-transform: uppercase;
   letter-spacing: 1px;
   color: var(--dim);
-  padding: 2px 6px;
+  background: transparent;
+  padding: 4px 10px;
   border: 1px solid var(--border);
   flex-shrink: 0;
+  cursor: pointer;
+  font-family: inherit;
+  touch-action: manipulation;
 }
 .chain-modal-state.on {
   color: var(--hl);
   border-color: var(--hl);
 }
+.chain-modal-state:active { background: rgba(255, 255, 255, 0.08); }
 
 .voice-controls-header {
   display: flex;
