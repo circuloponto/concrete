@@ -403,11 +403,11 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
     return () => { if (bandDopplerRafRef.current) cancelAnimationFrame(bandDopplerRafRef.current) }
   }, [getAudioCtx])
 
-  // Rebuild the band network when the band count changes.
+  // Rebuild the band network when count or active state changes.
   useEffect(() => {
     const mod = nodesRef.current && nodesRef.current.modules && nodesRef.current.modules.banddoppler
-    if (mod && mod.rebuildBands) mod.rebuildBands(bandDopplerBands)
-  }, [bandDopplerBands])
+    if (mod && mod.rebuildBands) mod.rebuildBands(bandDopplerBands, bandDopplerActive)
+  }, [bandDopplerBands, bandDopplerActive])
 
   // Band Reverb rAF — just drives the wet/dry crossfade and gain; the actual
   // reverb is baked into each band's convolver IR.
@@ -433,11 +433,11 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
     return () => { if (bandReverbRafRef.current) cancelAnimationFrame(bandReverbRafRef.current) }
   }, [getAudioCtx])
 
-  // Rebuild the band reverb network when its bands / size / spread / decay change.
+  // Rebuild band reverb network on any param or active change.
   useEffect(() => {
     const mod = nodesRef.current && nodesRef.current.modules && nodesRef.current.modules.bandreverb
-    if (mod && mod.rebuildBands) mod.rebuildBands(bandReverbBands, bandReverbSize, bandReverbSpread, bandReverbDecay)
-  }, [bandReverbBands, bandReverbSize, bandReverbSpread, bandReverbDecay])
+    if (mod && mod.rebuildBands) mod.rebuildBands(bandReverbBands, bandReverbSize, bandReverbSpread, bandReverbDecay, bandReverbActive)
+  }, [bandReverbBands, bandReverbSize, bandReverbSpread, bandReverbDecay, bandReverbActive])
 
 
   // ---- Spectral Freeze: multi-voice grains from voice buffer, pitch + phase spread ----
@@ -660,34 +660,38 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
       input.connect(dry).connect(output)
       wet.connect(output)
       const bandDopplerBandsRef = { value: [] }
-      const rebuildBands = (n) => {
-        // teardown previous
+      // Bands are only wired into the audio graph while the effect is active.
+      // Otherwise they're fully torn down — leaving them connected makes mobile
+      // CPU choke and silences the worklet output.
+      const rebuildBands = (n, active) => {
         for (const b of bandDopplerBandsRef.value) {
+          try { input.disconnect(b.bpf) } catch {}
           try { b.bpf.disconnect() } catch {}
           try { b.delay.disconnect() } catch {}
           try { b.panner.disconnect() } catch {}
           try { b.gain.disconnect() } catch {}
         }
+        bandDopplerBandsRef.value = []
+        if (!active) return
         const fresh = []
         const N = Math.max(1, Math.min(12, n | 0))
         for (let i = 0; i < N; i++) {
           const bpf = ctx.createBiquadFilter()
           bpf.type = 'bandpass'
           const t = N === 1 ? 0.5 : i / (N - 1)
-          bpf.frequency.value = 60 * Math.pow(10000 / 60, t) // log-spaced 60..10000
+          bpf.frequency.value = 60 * Math.pow(10000 / 60, t)
           bpf.Q.value = 6
           const delay = ctx.createDelay(0.1)
           delay.delayTime.value = 0
           const panner = ctx.createStereoPanner()
           const gain = G(1)
           input.connect(bpf).connect(delay).connect(panner).connect(gain).connect(wet)
-          // deterministic-looking phases via hash, so reloads look the same
           const phase = (Math.sin(i * 12.9898) * 43758.5453) % 1
           fresh.push({ bpf, delay, panner, gain, phase: ((phase % 1) + 1) % 1 })
         }
         bandDopplerBandsRef.value = fresh
       }
-      rebuildBands(bandDopplerBands)
+      rebuildBands(bandDopplerBands, bandDopplerActive)
       modules.banddoppler = {
         input, output, dry, wet, bandsRef: bandDopplerBandsRef, rebuildBands,
       }
@@ -701,12 +705,18 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
       input.connect(dry).connect(output)
       wet.connect(output)
       const bandReverbBandsRef = { value: [] }
-      const rebuildBands = (n, sizeSec, spread, decay) => {
+      // Convolvers stay torn down until the effect is active — leaving 6
+      // convolution paths processing input silently is enough to overload
+      // mobile audio worklets and silence playback.
+      const rebuildBands = (n, sizeSec, spread, decay, active) => {
         for (const b of bandReverbBandsRef.value) {
+          try { input.disconnect(b.bpf) } catch {}
           try { b.bpf.disconnect() } catch {}
           try { b.convolver.disconnect() } catch {}
           try { b.gain.disconnect() } catch {}
         }
+        bandReverbBandsRef.value = []
+        if (!active) return
         const fresh = []
         const N = Math.max(1, Math.min(12, n | 0))
         for (let i = 0; i < N; i++) {
@@ -715,12 +725,10 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
           const t = N === 1 ? 0.5 : i / (N - 1)
           bpf.frequency.value = 60 * Math.pow(10000 / 60, t)
           bpf.Q.value = 5
-          // per-band IR duration: base size, with deterministic spread so
-          // lower bands tend to have longer tails (matches real acoustics).
           const r = (Math.sin(i * 23.717) * 43758.5453) % 1
-          const rn = ((r % 1) + 1) % 1 // 0..1
-          const lowBias = 1 - t           // 1 at low bands, 0 at high
-          const variation = (rn - 0.5) * 2 // -1..1
+          const rn = ((r % 1) + 1) % 1
+          const lowBias = 1 - t
+          const variation = (rn - 0.5) * 2
           const dur = Math.max(0.1, sizeSec * (0.5 + lowBias * 0.7 + variation * spread * 0.6))
           const convolver = ctx.createConvolver()
           convolver.buffer = makeReverbIR(ctx, dur, Math.max(0.5, decay))
@@ -730,7 +738,7 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
         }
         bandReverbBandsRef.value = fresh
       }
-      rebuildBands(bandReverbBands, bandReverbSize, bandReverbSpread, bandReverbDecay)
+      rebuildBands(bandReverbBands, bandReverbSize, bandReverbSpread, bandReverbDecay, bandReverbActive)
       modules.bandreverb = {
         input, output, dry, wet, bandsRef: bandReverbBandsRef, rebuildBands,
       }
