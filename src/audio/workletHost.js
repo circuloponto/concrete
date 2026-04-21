@@ -2,12 +2,15 @@
 // fingerprinted URL. `?worker` would wrap it as a Web Worker — wrong for
 // AudioWorklets, which load via ctx.audioWorklet.addModule(url).
 import noopUrl from './worklets/noop.worklet.js?url'
+import granulatorUrl from './worklets/granulator.worklet.js?url'
 
 const WORKLET_URLS = {
   noop: noopUrl,
+  granulator: granulatorUrl,
 }
 
 const readyByContext = new WeakMap()
+const readyFlagByContext = new WeakMap()
 
 export function isWorkletEnabled() {
   if (typeof window === 'undefined') return false
@@ -36,8 +39,13 @@ export function ensureWorklets(ctx) {
     if (failed.length) {
       console.warn('[workletHost] some worklets failed to load', failed)
     }
+    readyFlagByContext.set(ctx, failed.length === 0)
     return { loaded: failed.length === 0, results }
   })
   readyByContext.set(ctx, promise)
   return promise
+}
+
+export function isWorkletReady(ctx) {
+  return !!readyFlagByContext.get(ctx)
 }

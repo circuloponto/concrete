@@ -4,7 +4,7 @@ import { useStore, defaultVoice } from './state'
 import { reverseBuffer, makeReverbIR, makeSaturationCurve } from './audio'
 import { applyModulation, DEFAULT_MOD, MOD_SPEC, lfoWave } from './modulation'
 import { createStretchShim } from './audio/stretchShim'
-import { isWorkletEnabled } from './audio/workletHost'
+import { isWorkletEnabled, isWorkletReady } from './audio/workletHost'
 
 const VIRTUAL_MOD_KEYS = ['granPos', 'granDensity', 'granPitch', 'dopplerSpeed', 'freezePos']
 
@@ -248,6 +248,23 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
         else if (key === 'dopplerSpeed') dopplerRef.current.speed = val
         else if (key === 'freezePos') freezeRef.current.pos = val
       }
+      // Push granulator state to the worklet's AudioParams every frame. Cheap
+      // property writes; the worklet consumes k-rate values on block boundaries.
+      const granNode = nodesRef.current?.modules?.granulator?.granNode
+      if (granNode) {
+        const p = granRef.current
+        const params = granNode.parameters
+        params.get('density').value = p.density
+        params.get('size').value = p.size
+        params.get('pos').value = p.pos
+        params.get('drift').value = p.drift
+        params.get('spray').value = p.spray
+        params.get('pitch').value = p.pitch
+        params.get('pitchSpread').value = p.pitchSpread
+        params.get('voicePitch').value = pitchRef.current
+        // gain stays at worklet default 1.0 — module-level granMix handles gain
+        params.get('active').value = p.active ? 1 : 0
+      }
       modRafRef.current = requestAnimationFrame(tick)
     }
     modRafRef.current = requestAnimationFrame(tick)
@@ -267,6 +284,8 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
     const p = granRef.current
     if (!buf || !nodes || !p.active) return
     if (!playingRef.current) return
+    // Worklet path handles spawning sample-accurately inside process().
+    if (nodes.modules?.granulator?.granNode) return
     const ctx = getAudioCtx()
 
     // advance cursor by drift
@@ -640,7 +659,22 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
       // CQ filterbank feeds into granMix
       const cqRoute = G(1)
       cqOut.connect(cqRoute).connect(granMix)
-      modules.granulator = { input, output, granDry, granMix, granBus: granMix, cqRoute } }
+      let granNode = null
+      if (isWorkletEnabled() && isWorkletReady(ctx)) {
+        try {
+          granNode = new AudioWorkletNode(ctx, 'granulator', {
+            numberOfInputs: 0,
+            numberOfOutputs: 2,
+            outputChannelCount: [2, 2],
+          })
+          granNode.connect(granMix, 0)
+          granNode.connect(cqIn, 1)
+        } catch (e) {
+          console.error('[useVoice] granulator worklet construction failed', e)
+          granNode = null
+        }
+      }
+      modules.granulator = { input, output, granDry, granMix, granBus: granMix, cqRoute, granNode } }
 
     // Freeze (ducks input via mix, adds own grains)
     { const input = G(), output = G()
@@ -1121,6 +1155,30 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
     if (!nodesRef.current) return
     nodesRef.current.cqFilters.forEach(({ filter }) => { filter.Q.value = granCQResonance })
   }, [granCQResonance])
+
+  // Push the current buffer into the granulator worklet whenever it changes.
+  // Clone channels into fresh Float32Arrays so we can transfer ownership to
+  // the worklet without losing main-thread access to the original AudioBuffer.
+  const granBufferIdRef = useRef(0)
+  useEffect(() => {
+    const granNode = nodesRef.current?.modules?.granulator?.granNode
+    if (!granNode || !buffer) return
+    const id = ++granBufferIdRef.current
+    const chans = []
+    for (let c = 0; c < buffer.numberOfChannels; c++) {
+      const copy = new Float32Array(buffer.length)
+      copy.set(buffer.getChannelData(c))
+      chans.push(copy)
+    }
+    granNode.port.postMessage({ type: 'loadBuffer', id, channels: chans }, chans.map(c => c.buffer))
+  }, [buffer])
+
+  // Forward constQ routing toggle into the worklet.
+  useEffect(() => {
+    const granNode = nodesRef.current?.modules?.granulator?.granNode
+    if (!granNode) return
+    granNode.port.postMessage({ type: 'setConstQ', enabled: granConstQ })
+  }, [granConstQ])
 
   const onScrub = useCallback((p, delta, phase) => {
     if (!buffer) return
