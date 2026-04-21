@@ -773,21 +773,26 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
       input.connect(dry).connect(output)
       wet.connect(output)
       const bandDopplerBandsRef = { value: [] }
-      // Persistent worklet per voice — stays allocated across rebuildBands,
-      // only its connections to the current band set change. 36 outputs =
-      // 12 max bands × (delay, pan, gain).
+      // Lazy-instantiate the 36-output worklet — it's meaningful audio-thread
+      // overhead even when idling, and most voices never enable bandDoppler.
+      // ensureWorklet() builds on first activation and keeps the node alive
+      // for subsequent toggles (cheap) rather than tearing down each time.
       let worklet = null
-      if (isWorkletEnabled() && isWorkletReady(ctx)) {
+      const ensureWorklet = () => {
+        if (worklet) return worklet
+        if (!isWorkletEnabled() || !isWorkletReady(ctx)) return null
         try {
           worklet = new AudioWorkletNode(ctx, 'bandDoppler', {
             numberOfInputs: 0,
             numberOfOutputs: 36,
             outputChannelCount: new Array(36).fill(1),
           })
+          if (modules.banddoppler) modules.banddoppler.worklet = worklet
         } catch (e) {
           console.error('[useVoice] bandDoppler worklet construction failed', e)
           worklet = null
         }
+        return worklet
       }
       // Bands are only wired into the audio graph while the effect is active.
       // Otherwise they're fully torn down — leaving them connected makes mobile
@@ -814,6 +819,8 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
           if (worklet) worklet.port.postMessage({ type: 'setNumBands', n: 0 })
           return
         }
+        // First activation — build the worklet on demand.
+        ensureWorklet()
         const fresh = []
         const N = Math.max(1, Math.min(12, n | 0))
         const phases = new Array(N)
