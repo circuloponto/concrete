@@ -3,10 +3,12 @@
 // AudioWorklets, which load via ctx.audioWorklet.addModule(url).
 import noopUrl from './worklets/noop.worklet.js?url'
 import granulatorUrl from './worklets/granulator.worklet.js?url'
+import dopplerUrl from './worklets/doppler.worklet.js?url'
 
 const WORKLET_URLS = {
   noop: noopUrl,
   granulator: granulatorUrl,
+  doppler: dopplerUrl,
 }
 
 const readyByContext = new WeakMap()

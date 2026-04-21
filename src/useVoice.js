@@ -353,7 +353,17 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
       last = now
       const d = dopplerRef.current
       const nodes = nodesRef.current
-      if (nodes) {
+      const mod = nodes?.modules?.doppler
+      // When the worklet drives the delay/gain directly, push state into its
+      // AudioParams and skip the JS-side setTargetAtTime calls.
+      if (mod?.dopplerWorklet) {
+        const w = mod.dopplerWorklet.parameters
+        w.get('speed').value = d.speed
+        w.get('range').value = d.range
+        w.get('minDist').value = d.minDist
+        w.get('mix').value = d.mix
+        w.get('active').value = d.active ? 1 : 0
+      } else if (nodes) {
         if (d.active && d.mix > 0) {
           dopplerTRef.current += dt * d.speed
           // source position x(t) = range * sin(2π t) → smooth pass-by cycle
@@ -434,29 +444,21 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
     if (mod && mod.rebuildBands) mod.rebuildBands(bandDopplerBands, bandDopplerActive)
   }, [bandDopplerBands, bandDopplerActive])
 
-  // Band Reverb rAF — just drives the wet/dry crossfade and gain; the actual
-  // reverb is baked into each band's convolver IR.
-  const bandReverbRafRef = useRef(null)
+  // Band Reverb wet/dry crossfade — state-driven, no rAF. The convolver IRs
+  // themselves do the reverb; this effect only reshapes when the user toggles
+  // active/mix/gain, so a 60Hz tick was pure overhead.
   useEffect(() => {
-    const tick = () => {
-      const br = bandReverbRef.current
-      const nodes = nodesRef.current
-      const mod = nodes && nodes.modules && nodes.modules.bandreverb
-      if (mod) {
-        const now = getAudioCtx().currentTime
-        if (br.active && br.mix > 0) {
-          mod.dry.gain.setTargetAtTime(1 - br.mix, now, 0.05)
-          mod.wet.gain.setTargetAtTime(br.gain, now, 0.05)
-        } else {
-          mod.dry.gain.setTargetAtTime(1, now, 0.05)
-          mod.wet.gain.setTargetAtTime(0, now, 0.05)
-        }
-      }
-      bandReverbRafRef.current = requestAnimationFrame(tick)
+    const mod = nodesRef.current?.modules?.bandreverb
+    if (!mod) return
+    const now = getAudioCtx().currentTime
+    if (bandReverbActive && bandReverbMix > 0) {
+      mod.dry.gain.setTargetAtTime(1 - bandReverbMix, now, 0.05)
+      mod.wet.gain.setTargetAtTime(bandReverbGain, now, 0.05)
+    } else {
+      mod.dry.gain.setTargetAtTime(1, now, 0.05)
+      mod.wet.gain.setTargetAtTime(0, now, 0.05)
     }
-    bandReverbRafRef.current = requestAnimationFrame(tick)
-    return () => { if (bandReverbRafRef.current) cancelAnimationFrame(bandReverbRafRef.current) }
-  }, [getAudioCtx])
+  }, [bandReverbActive, bandReverbMix, bandReverbGain, getAudioCtx])
 
   // Rebuild band reverb network on any param or active change.
   useEffect(() => {
@@ -689,7 +691,28 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
       const dopplerDelay = ctx.createDelay(0.5); dopplerDelay.delayTime.value = 0
       const dopplerGain = G(1)
       input.connect(dopplerDelay).connect(dopplerGain).connect(output)
-      modules.doppler = { input, output, dopplerDelay, dopplerGain } }
+      let dopplerWorklet = null
+      if (isWorkletEnabled() && isWorkletReady(ctx)) {
+        try {
+          dopplerWorklet = new AudioWorkletNode(ctx, 'doppler', {
+            numberOfInputs: 0,
+            numberOfOutputs: 2,
+            outputChannelCount: [1, 1],
+          })
+          // Worklet emits absolute target values; base param values must be 0
+          // so summation leaves the worklet's signal intact.
+          dopplerDelay.delayTime.value = 0
+          dopplerGain.gain.value = 0
+          dopplerWorklet.connect(dopplerDelay.delayTime, 0)
+          dopplerWorklet.connect(dopplerGain.gain, 1)
+        } catch (e) {
+          console.error('[useVoice] doppler worklet construction failed', e)
+          dopplerWorklet = null
+          dopplerDelay.delayTime.value = 0
+          dopplerGain.gain.value = 1
+        }
+      }
+      modules.doppler = { input, output, dopplerDelay, dopplerGain, dopplerWorklet } }
 
     // Band Doppler: splits the signal into N bandpass paths, each with its
     // own delay / pan / gain animated on a phase-offset pass-by curve. The
