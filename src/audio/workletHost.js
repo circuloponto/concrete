@@ -18,13 +18,6 @@ const WORKLET_URLS = {
 const readyByContext = new WeakMap()
 const readyFlagByContext = new WeakMap()
 
-export function isWorkletEnabled() {
-  if (typeof window === 'undefined') return false
-  if (window.__contreteWorklets === false) return false
-  if (window.__contreteWorklets === true) return true
-  return !!import.meta.env.DEV
-}
-
 export function registerWorklet(name, url) {
   WORKLET_URLS[name] = url
 }

@@ -1,10 +1,10 @@
 import SignalsmithStretch from 'signalsmith-stretch'
 
-// Mirrors the soundtouchjs PitchShifter surface that useVoice.js expects
-// (tempo/pitchSemitones/percentagePlayed/connect/disconnect, plus the
-// _kind/_oneShot/_onEnded tracking fields), but is backed by the WASM
-// AudioWorklet in signalsmith-stretch. Playback is sample-accurate; seeks and
-// tiny loops work without the ~93ms soundtouch buffer quirk.
+// Thin shim around signalsmith-stretch. Exposes the subset of fields
+// useVoice.js's play tick expects: tempo/pitchSemitones/percentagePlayed,
+// connect/disconnect, updateLoop, plus _kind/_oneShot/_onEnded. Playback
+// is sample-accurate via the WASM AudioWorklet; loop points and seeks
+// work at any size.
 //
 // Constructor is synchronous so play() stays sync. The underlying worklet +
 // buffer load asynchronously; ops that land before the node is ready are

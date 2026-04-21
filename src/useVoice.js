@@ -1,10 +1,9 @@
 import { useRef, useState, useEffect, useCallback } from 'react'
-import { PitchShifter } from 'soundtouchjs'
 import { useStore, defaultVoice } from './state'
 import { reverseBuffer, makeReverbIR, makeSaturationCurve } from './audio'
 import { applyModulation, DEFAULT_MOD, MOD_SPEC, lfoWave } from './modulation'
 import { createStretchShim } from './audio/stretchShim'
-import { isWorkletEnabled, isWorkletReady } from './audio/workletHost'
+import { isWorkletReady } from './audio/workletHost'
 
 const VIRTUAL_MOD_KEYS = ['granPos', 'granDensity', 'granPitch', 'dopplerSpeed', 'freezePos']
 
@@ -712,7 +711,7 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
       const cqRoute = G(1)
       cqOut.connect(cqRoute).connect(granMix)
       let granNode = null
-      if (isWorkletEnabled() && isWorkletReady(ctx)) {
+      if (isWorkletReady(ctx)) {
         try {
           granNode = new AudioWorkletNode(ctx, 'granulator', {
             numberOfInputs: 0,
@@ -742,7 +741,7 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
       const dopplerGain = G(1)
       input.connect(dopplerDelay).connect(dopplerGain).connect(output)
       let dopplerWorklet = null
-      if (isWorkletEnabled() && isWorkletReady(ctx)) {
+      if (isWorkletReady(ctx)) {
         try {
           dopplerWorklet = new AudioWorkletNode(ctx, 'doppler', {
             numberOfInputs: 0,
@@ -780,7 +779,7 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
       let worklet = null
       const ensureWorklet = () => {
         if (worklet) return worklet
-        if (!isWorkletEnabled() || !isWorkletReady(ctx)) return null
+        if (!isWorkletReady(ctx)) return null
         try {
           worklet = new AudioWorkletNode(ctx, 'bandDoppler', {
             numberOfInputs: 0,
@@ -998,9 +997,8 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
     const src = reversedRef.current ? reverseBuffer(buffer, ctx) : buffer
     const dur = src.duration
     // Use a native AudioBufferSourceNode when we don't need pitch/tempo
-    // shifting — it supports hardware loopStart/loopEnd and handles arbitrary
-    // loop sizes reliably, unlike soundtouchjs whose internal ~93 ms buffer
-    // makes mid-stream seeks flaky.
+    // shifting — it supports hardware loopStart/loopEnd and is free on the
+    // audio thread. The worklet stretcher spins up only when needed.
     const needsShifter = tempo !== 1 || pitch !== 0
     playingRef.current = true
     setPlaying(true)
@@ -1021,7 +1019,7 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
       } else {
         node.start(0, startOffset)
       }
-      // Shim matching the PitchShifter surface the rest of useVoice expects.
+      // Shim matching the shifter surface the rest of useVoice expects.
       const shim = {
         _kind: 'source',
         _node: node,
@@ -1066,7 +1064,7 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
         },
       }
       shifterRef.current = shim
-    } else if (isWorkletEnabled()) {
+    } else {
       const lb = loopBoundsRef.current
       const shifter = createStretchShim(ctx, src, nodes.shifterBus, {
         tempo,
@@ -1078,39 +1076,22 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
         startFromNorm: lb.start,
       })
       shifterRef.current = shifter
-    } else {
-      const shifter = new PitchShifter(ctx, src, 4096)
-      shifter.tempo = tempo
-      shifter.pitchSemitones = pitch
-      shifter.connect(nodes.shifterBus)
-      shifter._oneShot = oneShot
-      shifter._onEnded = onEnded
-      shifterRef.current = shifter
-      requestAnimationFrame(() => {
-        if (shifterRef.current === shifter) shifter.percentagePlayed = loopBoundsRef.current.start * 100
-      })
     }
     const tick = () => {
       const sh = shifterRef.current
       if (!sh) return
       // Keep loop points in sync with the ref so live drags of loop handles
       // apply during playback. Both the native source path and the stretch
-      // worklet expose updateLoop; only soundtouchjs needs JS-side looping.
+      // worklet expose updateLoop.
       if ((sh._kind === 'source' || sh._kind === 'stretch') && sh.updateLoop) {
         const { start: ls, end: le } = loopBoundsRef.current
         sh.updateLoop(ls, le)
       }
       const p = sh.percentagePlayed / 100
       setPosition(p)
-      const { start: ls, end: le } = loopBoundsRef.current
-      if (sh._kind !== 'source' && sh._kind !== 'stretch' && (p >= le || p >= 0.999)) {
-        if (sh._oneShot) {
-          const cb = sh._onEnded
-          if (cb) cb()
-          return
-        }
-        sh.percentagePlayed = ls * 100
-      }
+      // Stretch and native source handle looping themselves. For one-shot
+      // playback via stretch we still watch for end-of-buffer to fire
+      // onEnded (native source uses AudioBufferSourceNode.onended instead).
       if (sh._kind === 'stretch' && sh._oneShot && p >= 0.999) {
         const cb = sh._onEnded
         if (cb) cb()
@@ -1171,8 +1152,8 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
 
   // Live updates
   // If tempo/pitch moves away from defaults while the cheap source-node path
-  // is playing, rebuild as a PitchShifter so the change takes effect. Going
-  // back to defaults also rebuilds (cheaply, to shed soundtouchjs).
+  // is playing, rebuild as a stretch shim so the change takes effect. Going
+  // back to defaults rebuilds down to the raw source node.
   const playRef = useRef(play); playRef.current = play
   const rebuildPlaybackIfNeeded = () => {
     const sh = shifterRef.current

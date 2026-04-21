@@ -117,10 +117,10 @@ export function Waveform({ buffer, position, playing, onScrub, width = 640, heig
       modeRef.current = 'select'
       const lo = Math.min(a, p)
       const hi = Math.max(a, p)
-      // Minimum loop width: 150 ms in buffer time. Shorter loops confuse
-      // soundtouchjs's ~93 ms process buffer and produce silence / glitches.
+      // Tiny floor just to prevent zero-width loops; signalsmith-stretch
+      // and AudioBufferSourceNode both handle sub-100ms loops cleanly.
       const dur = buffer ? buffer.duration : 1
-      const minFrac = Math.min(0.5, 0.15 / dur)
+      const minFrac = Math.min(0.5, 0.005 / dur)
       setLoopStart(lo)
       setLoopEnd(Math.min(1, Math.max(lo + minFrac, hi)))
       return

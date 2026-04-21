@@ -152,10 +152,9 @@ export function Disk({ buffer, position, playing, onScrub, size = 280,
     const { angle } = getPointer(e)
     if (dragModeRef.current === 'loopStart' || dragModeRef.current === 'loopEnd') {
       const t = angleToT(angle)
-      // Minimum loop width: 150 ms in buffer time — matches the Waveform
-      // constraint (soundtouchjs's process buffer is ~93 ms).
+      // Tiny floor matches Waveform.jsx — just prevents zero-width loops.
       const dur = buffer ? buffer.duration : 1
-      const minFrac = Math.min(0.5, 0.15 / dur)
+      const minFrac = Math.min(0.5, 0.005 / dur)
       if (dragModeRef.current === 'loopStart') {
         setLoopStart(Math.min(t, loopRef.current.end - minFrac))
       } else {
