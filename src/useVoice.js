@@ -232,21 +232,32 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
   // Single rAF loop that drives all active LFOs + HRTF panner directly to audio nodes.
   const modRafRef = useRef(null)
   useEffect(() => {
+    let skip = 0
     const tick = () => {
-      applyModulation(stateRef.current, nodesRef.current, shifterRef.current)
-      // virtual targets — non-AudioParam params that the scheduler reads from refs
-      const mods = stateRef.current.modulators || {}
-      for (const key of VIRTUAL_MOD_KEYS) {
-        const m = mods[key]
-        if (!m || !m.enabled) continue
-        const base = stateRef.current[key]
-        if (typeof base !== 'number') continue
-        const val = modulatedValue(key, base, m)
-        if (key === 'granPos') granRef.current.pos = val
-        else if (key === 'granDensity') granRef.current.density = val
-        else if (key === 'granPitch') granRef.current.pitch = val
-        else if (key === 'dopplerSpeed') dopplerRef.current.speed = val
-        else if (key === 'freezePos') freezeRef.current.pos = val
+      // Throttle the modulator sweep to 30Hz — it's a control-rate loop, not
+      // audio DSP, and humans don't perceive sub-33ms latency on LFO writes.
+      // Early-exit when no modulators are enabled (the common case).
+      skip = (skip + 1) & 1
+      if (skip === 1) {
+        const mods = stateRef.current.modulators || {}
+        let anyEnabled = false
+        for (const k in mods) { if (mods[k]?.enabled) { anyEnabled = true; break } }
+        if (anyEnabled) {
+          applyModulation(stateRef.current, nodesRef.current, shifterRef.current)
+          // virtual targets — non-AudioParam params that the scheduler reads from refs
+          for (const key of VIRTUAL_MOD_KEYS) {
+            const m = mods[key]
+            if (!m || !m.enabled) continue
+            const base = stateRef.current[key]
+            if (typeof base !== 'number') continue
+            const val = modulatedValue(key, base, m)
+            if (key === 'granPos') granRef.current.pos = val
+            else if (key === 'granDensity') granRef.current.density = val
+            else if (key === 'granPitch') granRef.current.pitch = val
+            else if (key === 'dopplerSpeed') dopplerRef.current.speed = val
+            else if (key === 'freezePos') freezeRef.current.pos = val
+          }
+        }
       }
       // Push granulator state to the worklet's AudioParams every frame. Cheap
       // property writes; the worklet consumes k-rate values on block boundaries.
