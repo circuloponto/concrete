@@ -1,5 +1,6 @@
 import { createContext, useContext, useRef, useState, useCallback } from 'react'
 import { bufferToBase64, base64ToBuffer } from './audio'
+import { ensureWorklets } from './audio/workletHost'
 
 const Ctx = createContext(null)
 
@@ -152,6 +153,7 @@ export function StateProvider({ children }) {
   const getAudioCtx = useCallback(() => {
     if (!audioCtxRef.current) {
       audioCtxRef.current = new (window.AudioContext || window.webkitAudioContext)()
+      ensureWorklets(audioCtxRef.current)
     }
     if (audioCtxRef.current.state === 'suspended') audioCtxRef.current.resume()
     return audioCtxRef.current
