@@ -3,6 +3,8 @@ import { PitchShifter } from 'soundtouchjs'
 import { useStore, defaultVoice } from './state'
 import { reverseBuffer, makeReverbIR, makeSaturationCurve } from './audio'
 import { applyModulation, DEFAULT_MOD, MOD_SPEC, lfoWave } from './modulation'
+import { createStretchShim } from './audio/stretchShim'
+import { isWorkletEnabled } from './audio/workletHost'
 
 const VIRTUAL_MOD_KEYS = ['granPos', 'granDensity', 'granPitch', 'dopplerSpeed', 'freezePos']
 
@@ -903,6 +905,18 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
         },
       }
       shifterRef.current = shim
+    } else if (isWorkletEnabled()) {
+      const lb = loopBoundsRef.current
+      const shifter = createStretchShim(ctx, src, nodes.shifterBus, {
+        tempo,
+        pitch,
+        loopStart: lb.start,
+        loopEnd: lb.end,
+        oneShot,
+        onEnded,
+        startFromNorm: lb.start,
+      })
+      shifterRef.current = shifter
     } else {
       const shifter = new PitchShifter(ctx, src, 4096)
       shifter.tempo = tempo
@@ -918,22 +932,28 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
     const tick = () => {
       const sh = shifterRef.current
       if (!sh) return
-      // Keep loop points in sync with the ref (for source-node path, this is
-      // how live drags of loop handles apply during playback).
-      if (sh._kind === 'source' && sh.updateLoop) {
+      // Keep loop points in sync with the ref so live drags of loop handles
+      // apply during playback. Both the native source path and the stretch
+      // worklet expose updateLoop; only soundtouchjs needs JS-side looping.
+      if ((sh._kind === 'source' || sh._kind === 'stretch') && sh.updateLoop) {
         const { start: ls, end: le } = loopBoundsRef.current
         sh.updateLoop(ls, le)
       }
       const p = sh.percentagePlayed / 100
       setPosition(p)
       const { start: ls, end: le } = loopBoundsRef.current
-      if (sh._kind !== 'source' && (p >= le || p >= 0.999)) {
+      if (sh._kind !== 'source' && sh._kind !== 'stretch' && (p >= le || p >= 0.999)) {
         if (sh._oneShot) {
           const cb = sh._onEnded
           if (cb) cb()
           return
         }
         sh.percentagePlayed = ls * 100
+      }
+      if (sh._kind === 'stretch' && sh._oneShot && p >= 0.999) {
+        const cb = sh._onEnded
+        if (cb) cb()
+        return
       }
       rafRef.current = requestAnimationFrame(tick)
     }
