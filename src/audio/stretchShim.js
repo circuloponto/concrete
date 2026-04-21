@@ -61,9 +61,9 @@ export function createStretchShim(ctx, buffer, destNode, opts = {}) {
     get _oneShot() { return state.oneShot },
     set _oneShot(v) { state.oneShot = v; runOrQueue(n => scheduleAll(n)) },
     get tempo() { return state.tempo },
-    set tempo(v) { state.tempo = v; runOrQueue(n => scheduleAll(n)) },
+    set tempo(v) { if (state.tempo === v) return; state.tempo = v; runOrQueue(n => scheduleAll(n)) },
     get pitchSemitones() { return state.pitch },
-    set pitchSemitones(v) { state.pitch = v; runOrQueue(n => scheduleAll(n)) },
+    set pitchSemitones(v) { if (state.pitch === v) return; state.pitch = v; runOrQueue(n => scheduleAll(n)) },
     get percentagePlayed() {
       if (!stretch) return state.startFromNorm * 100
       return (stretch.inputTime / dur) * 100
@@ -71,9 +71,21 @@ export function createStretchShim(ctx, buffer, destNode, opts = {}) {
     set percentagePlayed(pct) {
       const input = Math.max(0, Math.min(dur, (pct / 100) * dur))
       state.startFromNorm = input / dur
-      runOrQueue(n => scheduleAll(n, { input }))
+      // Schedule slightly ahead so the worklet has room to crossfade rather
+      // than hard-cut. Without the offset, scrub-end positioning sounds
+      // glitchy because the node has to catch up from its internal buffer.
+      runOrQueue(n => n.schedule({
+        output: ctx.currentTime + 0.02,
+        active: true,
+        rate: state.tempo,
+        semitones: state.pitch,
+        input,
+        loopStart: state.oneShot ? 0 : state.loopStart * dur,
+        loopEnd: state.oneShot ? 0 : state.loopEnd * dur,
+      }))
     },
     updateLoop(lsNorm, leNorm) {
+      if (state.loopStart === lsNorm && state.loopEnd === leNorm) return
       state.loopStart = lsNorm
       state.loopEnd = leNorm
       runOrQueue(n => scheduleAll(n))
