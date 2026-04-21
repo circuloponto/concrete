@@ -4,11 +4,13 @@
 import noopUrl from './worklets/noop.worklet.js?url'
 import granulatorUrl from './worklets/granulator.worklet.js?url'
 import dopplerUrl from './worklets/doppler.worklet.js?url'
+import bandDopplerUrl from './worklets/bandDoppler.worklet.js?url'
 
 const WORKLET_URLS = {
   noop: noopUrl,
   granulator: granulatorUrl,
   doppler: dopplerUrl,
+  bandDoppler: bandDopplerUrl,
 }
 
 const readyByContext = new WeakMap()

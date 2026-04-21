@@ -393,14 +393,24 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
 
   // Band Doppler rAF — animates each band's delay/pan/gain independently so
   // the N bands feel like N different objects passing by the listener.
+  // When the worklet is active, it drives the per-band params directly;
+  // the rAF just pokes k-rate worklet params with current state.
   const bandDopplerRafRef = useRef(null)
   useEffect(() => {
     const TAU = Math.PI * 2
     const tick = () => {
       const bd = bandDopplerRef.current
       const nodes = nodesRef.current
-      const mod = nodes && nodes.modules && nodes.modules.banddoppler
-      if (mod) {
+      const mod = nodes?.modules?.banddoppler
+      if (mod?.worklet) {
+        const w = mod.worklet.parameters
+        w.get('speed').value = bd.speed
+        w.get('spread').value = bd.spread
+        w.get('panWidth').value = bd.panWidth
+        w.get('distance').value = bd.distance
+        w.get('mix').value = bd.mix
+        w.get('active').value = bd.active ? 1 : 0
+      } else if (mod) {
         const ctx = getAudioCtx()
         const bands = mod.bandsRef.value
         const now = ctx.currentTime
@@ -437,6 +447,21 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
     bandDopplerRafRef.current = requestAnimationFrame(tick)
     return () => { if (bandDopplerRafRef.current) cancelAnimationFrame(bandDopplerRafRef.current) }
   }, [getAudioCtx])
+
+  // When the worklet drives the per-band params, dry/wet stays a state-change
+  // useEffect — no need for the rAF tick to poke it every frame.
+  useEffect(() => {
+    const mod = nodesRef.current?.modules?.banddoppler
+    if (!mod?.worklet) return
+    const now = getAudioCtx().currentTime
+    if (bandDopplerActive && bandDopplerMix > 0) {
+      mod.dry.gain.setTargetAtTime(1 - bandDopplerMix, now, 0.02)
+      mod.wet.gain.setTargetAtTime(bandDopplerGain, now, 0.02)
+    } else {
+      mod.dry.gain.setTargetAtTime(1, now, 0.05)
+      mod.wet.gain.setTargetAtTime(0, now, 0.05)
+    }
+  }, [bandDopplerActive, bandDopplerMix, bandDopplerGain, getAudioCtx])
 
   // Rebuild the band network when count or active state changes.
   useEffect(() => {
@@ -723,10 +748,35 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
       input.connect(dry).connect(output)
       wet.connect(output)
       const bandDopplerBandsRef = { value: [] }
+      // Persistent worklet per voice — stays allocated across rebuildBands,
+      // only its connections to the current band set change. 36 outputs =
+      // 12 max bands × (delay, pan, gain).
+      let worklet = null
+      if (isWorkletEnabled() && isWorkletReady(ctx)) {
+        try {
+          worklet = new AudioWorkletNode(ctx, 'bandDoppler', {
+            numberOfInputs: 0,
+            numberOfOutputs: 36,
+            outputChannelCount: new Array(36).fill(1),
+          })
+        } catch (e) {
+          console.error('[useVoice] bandDoppler worklet construction failed', e)
+          worklet = null
+        }
+      }
       // Bands are only wired into the audio graph while the effect is active.
       // Otherwise they're fully torn down — leaving them connected makes mobile
       // CPU choke and silences the worklet output.
       const rebuildBands = (n, active) => {
+        // Drop any prior worklet→band-param connections before the params die.
+        if (worklet) {
+          for (let i = 0; i < bandDopplerBandsRef.value.length; i++) {
+            const b = bandDopplerBandsRef.value[i]
+            try { worklet.disconnect(b.delay.delayTime, i * 3) } catch {}
+            try { worklet.disconnect(b.panner.pan, i * 3 + 1) } catch {}
+            try { worklet.disconnect(b.gain.gain, i * 3 + 2) } catch {}
+          }
+        }
         for (const b of bandDopplerBandsRef.value) {
           try { input.disconnect(b.bpf) } catch {}
           try { b.bpf.disconnect() } catch {}
@@ -735,9 +785,13 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
           try { b.gain.disconnect() } catch {}
         }
         bandDopplerBandsRef.value = []
-        if (!active) return
+        if (!active) {
+          if (worklet) worklet.port.postMessage({ type: 'setNumBands', n: 0 })
+          return
+        }
         const fresh = []
         const N = Math.max(1, Math.min(12, n | 0))
+        const phases = new Array(N)
         for (let i = 0; i < N; i++) {
           const bpf = ctx.createBiquadFilter()
           bpf.type = 'bandpass'
@@ -747,16 +801,29 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
           const delay = ctx.createDelay(0.1)
           delay.delayTime.value = 0
           const panner = ctx.createStereoPanner()
-          const gain = G(1)
+          // Base gain is 0 when the worklet will drive it (summation leaves
+          // the worklet's absolute value intact); 1 for the legacy rAF path.
+          const gain = G(worklet ? 0 : 1)
           input.connect(bpf).connect(delay).connect(panner).connect(gain).connect(wet)
           const phase = (Math.sin(i * 12.9898) * 43758.5453) % 1
-          fresh.push({ bpf, delay, panner, gain, phase: ((phase % 1) + 1) % 1 })
+          const normPhase = ((phase % 1) + 1) % 1
+          phases[i] = normPhase
+          fresh.push({ bpf, delay, panner, gain, phase: normPhase })
+          if (worklet) {
+            worklet.connect(delay.delayTime, i * 3)
+            worklet.connect(panner.pan, i * 3 + 1)
+            worklet.connect(gain.gain, i * 3 + 2)
+          }
         }
         bandDopplerBandsRef.value = fresh
+        if (worklet) {
+          worklet.port.postMessage({ type: 'setPhases', phases })
+          worklet.port.postMessage({ type: 'setNumBands', n: N })
+        }
       }
       rebuildBands(bandDopplerBands, bandDopplerActive)
       modules.banddoppler = {
-        input, output, dry, wet, bandsRef: bandDopplerBandsRef, rebuildBands,
+        input, output, dry, wet, bandsRef: bandDopplerBandsRef, rebuildBands, worklet,
       }
     }
 
