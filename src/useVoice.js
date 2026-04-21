@@ -859,7 +859,12 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
           const rn = ((r % 1) + 1) % 1
           const lowBias = 1 - t
           const variation = (rn - 0.5) * 2
-          const dur = Math.max(0.1, sizeSec * (0.5 + lowBias * 0.7 + variation * spread * 0.6))
+          // Narrow high-band IR tail is inaudible past ~1s anyway — clamp
+          // max duration per band (t=0 → 6s, t=1 → 0.5s). Cuts convolver
+          // cost roughly linearly with IR length without altering character.
+          const maxDur = 0.5 + (1 - t) * 5.5
+          const rawDur = sizeSec * (0.5 + lowBias * 0.7 + variation * spread * 0.6)
+          const dur = Math.max(0.1, Math.min(maxDur, rawDur))
           const convolver = ctx.createConvolver()
           convolver.buffer = makeReverbIR(ctx, dur, Math.max(0.5, decay))
           const gain = G(1)
