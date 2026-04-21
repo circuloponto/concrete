@@ -595,14 +595,28 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
     }
     const G = (v = 1) => { const g = ctx.createGain(); g.gain.value = v; return g }
 
-    // ---- Source buses + granulator CQ bank (always first) ----
+    // ---- Source buses + granulator CQ bank (demand-loaded) ----
+    // The 24-biquad constant-Q bank is only built while granConstQ is on.
+    // Before then, cqIn/cqOut exist as gain stubs so rebuildable paths can
+    // route through them unconditionally; the bank itself is empty.
     const scrubBus = G(1), shifterBus = G(1)
-    const cqIn = G(1), cqOut = G(1), cqFilters = []
-    for (let i = 0; i < 24; i++) {
-      const f = ctx.createBiquadFilter(); f.type = 'bandpass'
-      f.frequency.value = 60 * Math.pow(10000 / 60, i / 23); f.Q.value = 8
-      const bg = G(((0.5 + Math.exp(-Math.pow(Math.log(f.frequency.value / 2500), 2) / 2) * 1.2) / 24) * 6)
-      cqIn.connect(f).connect(bg).connect(cqOut); cqFilters.push({ filter: f, gain: bg })
+    const cqIn = G(1), cqOut = G(1)
+    const cqFilters = []
+    const buildCQBank = (Q = 8) => {
+      if (cqFilters.length > 0) return
+      for (let i = 0; i < 24; i++) {
+        const f = ctx.createBiquadFilter(); f.type = 'bandpass'
+        f.frequency.value = 60 * Math.pow(10000 / 60, i / 23); f.Q.value = Q
+        const bg = G(((0.5 + Math.exp(-Math.pow(Math.log(f.frequency.value / 2500), 2) / 2) * 1.2) / 24) * 6)
+        cqIn.connect(f).connect(bg).connect(cqOut); cqFilters.push({ filter: f, gain: bg })
+      }
+    }
+    const teardownCQBank = () => {
+      for (const { filter, gain } of cqFilters) {
+        try { filter.disconnect() } catch {}
+        try { gain.disconnect() } catch {}
+      }
+      cqFilters.length = 0
     }
     const master = G(voiceGain)
 
@@ -919,7 +933,7 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
       ...flat,
       scrubBus, shifterBus,
       granBus: modules.granulator.granMix,
-      cqIn, cqOut, cqFilters,
+      cqIn, cqOut, cqFilters, buildCQBank, teardownCQBank,
       master, oscs, modules, wireChain,
     }
     return nodesRef.current
@@ -1247,7 +1261,15 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
     if (nodesRef.current.freezeDry) nodesRef.current.freezeDry.gain.value = freezeActive ? (1 - freezeMix) : 1
   }, [freezeMix, freezeActive])
   useEffect(() => {
+    const n = nodesRef.current
+    if (!n) return
+    if (granConstQ) n.buildCQBank(granCQResonance)
+    else n.teardownCQBank()
+  }, [granConstQ])
+
+  useEffect(() => {
     if (!nodesRef.current) return
+    // No-op when the bank isn't built; otherwise sweeps Q live.
     nodesRef.current.cqFilters.forEach(({ filter }) => { filter.Q.value = granCQResonance })
   }, [granCQResonance])
 
