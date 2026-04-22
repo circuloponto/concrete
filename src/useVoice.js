@@ -235,34 +235,31 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
     mix: freezeMix, gainVal: freezeGainVal, pitch: freezePitch, voices: freezeVoices, phase: freezePhase,
   }
 
-  // Single rAF loop that drives all active LFOs + HRTF panner directly to audio nodes.
+  // Single control-rate loop driving modulator writes + worklet param pushes.
+  // setInterval(33) beats rAF+skip here: we avoid one scheduling callback per
+  // rendered frame, and the loop is inherently control-rate — not tied to
+  // vsync. Backgrounded tabs throttle both anyway; audio keeps playing via
+  // the worklets' own clocks without needing main-thread pokes.
   const modRafRef = useRef(null)
   useEffect(() => {
-    let skip = 0
     const tick = () => {
-      // Throttle the modulator sweep to 30Hz — it's a control-rate loop, not
-      // audio DSP, and humans don't perceive sub-33ms latency on LFO writes.
-      // Early-exit when no modulators are enabled (the common case).
-      skip = (skip + 1) & 1
-      if (skip === 1) {
-        const mods = stateRef.current.modulators || {}
-        let anyEnabled = false
-        for (const k in mods) { if (mods[k]?.enabled) { anyEnabled = true; break } }
-        if (anyEnabled) {
-          applyModulation(stateRef.current, nodesRef.current, shifterRef.current)
-          // virtual targets — non-AudioParam params that the scheduler reads from refs
-          for (const key of VIRTUAL_MOD_KEYS) {
-            const m = mods[key]
-            if (!m || !m.enabled) continue
-            const base = stateRef.current[key]
-            if (typeof base !== 'number') continue
-            const val = modulatedValue(key, base, m)
-            if (key === 'granPos') granRef.current.pos = val
-            else if (key === 'granDensity') granRef.current.density = val
-            else if (key === 'granPitch') granRef.current.pitch = val
-            else if (key === 'dopplerSpeed') dopplerRef.current.speed = val
-            else if (key === 'freezePos') freezeRef.current.pos = val
-          }
+      const mods = stateRef.current.modulators || {}
+      let anyEnabled = false
+      for (const k in mods) { if (mods[k]?.enabled) { anyEnabled = true; break } }
+      if (anyEnabled) {
+        applyModulation(stateRef.current, nodesRef.current, shifterRef.current)
+        // virtual targets — non-AudioParam params that the scheduler reads from refs
+        for (const key of VIRTUAL_MOD_KEYS) {
+          const m = mods[key]
+          if (!m || !m.enabled) continue
+          const base = stateRef.current[key]
+          if (typeof base !== 'number') continue
+          const val = modulatedValue(key, base, m)
+          if (key === 'granPos') granRef.current.pos = val
+          else if (key === 'granDensity') granRef.current.density = val
+          else if (key === 'granPitch') granRef.current.pitch = val
+          else if (key === 'dopplerSpeed') dopplerRef.current.speed = val
+          else if (key === 'freezePos') freezeRef.current.pos = val
         }
       }
       // Push granulator state to the worklet's AudioParams only when it
@@ -303,10 +300,9 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
         if (last.phase !== f.phase) { params.get('phase').value = f.phase; last.phase = f.phase }
         if (last.active !== a) { params.get('active').value = a; last.active = a }
       }
-      modRafRef.current = requestAnimationFrame(tick)
     }
-    modRafRef.current = requestAnimationFrame(tick)
-    return () => { if (modRafRef.current) cancelAnimationFrame(modRafRef.current) }
+    modRafRef.current = setInterval(tick, 33)
+    return () => { if (modRafRef.current) clearInterval(modRafRef.current) }
   }, [])
 
   // Granulator scheduler — self-rescheduling setTimeout that reads params from ref.
@@ -1156,13 +1152,24 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
   const loopBoundsRef = useRef({ start: loopStart, end: loopEnd })
   loopBoundsRef.current = { start: loopStart, end: loopEnd }
 
-  const play = useCallback((opts) => {
+  const play = useCallback(async (opts) => {
     if (!buffer) return
     const oneShot = !!opts?.oneShot
     const onEnded = opts?.onEnded
+    const ctx = getAudioCtx()
+    // Belt-and-suspenders for the race already mostly handled by the buffer
+    // effect: if a caller hits play() before ensureWorklets has resolved
+    // (e.g. fast initial interaction, or a scrub built stale nodes), this
+    // awaits the cached promise and then the follow-through teardownEffects +
+    // ensureEffects below picks up worklet-backed modules. Essentially free
+    // on repeat calls since readyByContext caches the promise.
+    await ensureWorklets(ctx)
     if (shifterRef.current) { try { shifterRef.current.disconnect() } catch {}; shifterRef.current = null }
     if (rafRef.current) cancelAnimationFrame(rafRef.current)
-    const ctx = getAudioCtx()
+    // Force a rebuild if whatever built the nodes didn't have worklets ready.
+    if (nodesRef.current && !nodesRef.current.modules?.granulator?.granNode) {
+      teardownEffects()
+    }
     const nodes = ensureEffects()
     if (!nodes) return
     const src = reversedRef.current ? reverseBuffer(buffer, ctx) : buffer
@@ -1271,7 +1278,7 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
       rafRef.current = requestAnimationFrame(tick)
     }
     rafRef.current = requestAnimationFrame(tick)
-  }, [buffer, tempo, pitch, ensureEffects, getAudioCtx])
+  }, [buffer, tempo, pitch, ensureEffects, getAudioCtx, teardownEffects])
 
   // Snapshot
   useEffect(() => {
