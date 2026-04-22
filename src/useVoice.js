@@ -245,6 +245,20 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
     mix: freezeMix, gainVal: freezeGainVal, pitch: freezePitch, voices: freezeVoices, phase: freezePhase,
   }
 
+  // Is anything for the mod tick to actually do? If no modulator is enabled
+  // and every worklet-backed effect is idle, the interval body is purely
+  // dirty-check no-ops, so we might as well not schedule it at all.
+  const anyModEnabled = (() => {
+    const mods = modulators || {}
+    for (const k in mods) if (mods[k]?.enabled) return true
+    return false
+  })()
+  const tickNeeded = anyModEnabled
+    || granActive
+    || dopplerActive
+    || bandDopplerActive
+    || (freezeActive && freezeMix > 0)
+
   // Single control-rate loop driving modulator writes + worklet param pushes.
   // setInterval(33) beats rAF+skip here: we avoid one scheduling callback per
   // rendered frame, and the loop is inherently control-rate — not tied to
@@ -325,9 +339,23 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
         if (last.active !== a) { params.get('active').value = a; last.active = a }
       }
     }
+    if (!tickNeeded) {
+      // Flush once so any pending transition (e.g. active-flag flip just
+      // before this useEffect fires with tickNeeded=false) still reaches
+      // the worklet, then don't schedule an interval at all.
+      tick()
+      return
+    }
+    tick()  // run once immediately so transitions are visible within a frame
     modRafRef.current = setInterval(tick, 33)
-    return () => { if (modRafRef.current) clearInterval(modRafRef.current) }
-  }, [])
+    return () => {
+      if (modRafRef.current) { clearInterval(modRafRef.current); modRafRef.current = null }
+      // One final flush on cleanup ensures the post-transition state (e.g.
+      // active=0 after a deactivate) reaches the worklet even if the
+      // interval is gone by the next render.
+      try { tick() } catch {}
+    }
+  }, [tickNeeded])
 
   // bufferRef kept in sync so the granulator / freeze buffer-load useEffects
   // can read the current AudioBuffer without waiting for a closure refresh.
@@ -1456,6 +1484,7 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
   useEffect(() => {
     const granNode = nodesRef.current?.modules?.granulator?.granNode
     if (!granNode || !buffer) return
+    const prevId = granBufferIdRef.current
     const id = ++granBufferIdRef.current
     const chans = []
     for (let c = 0; c < buffer.numberOfChannels; c++) {
@@ -1464,6 +1493,10 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
       chans.push(copy)
     }
     granNode.port.postMessage({ type: 'loadBuffer', id, channels: chans }, chans.map(c => c.buffer))
+    // Free the previous buffer in the worklet's map so a session of many
+    // sample swaps doesn't accumulate Float32Array clones in the audio
+    // thread's heap. No-op on the first load (prevId is 0).
+    if (prevId > 0) granNode.port.postMessage({ type: 'freeBuffer', id: prevId })
   }, [buffer, nodesReadyV])
 
   // Forward constQ routing toggle into the worklet. Also re-send on node
@@ -1487,10 +1520,13 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
     const nextSkip = new Set()
     const bases = {
       filterHz, filterQ, reverbWet, wet, panCenter, voiceGain, delayTime, delayFb,
+      flangerMix, flangerFb, freezeMix, flangerDepth, wowDepth,
     }
     for (const key of Object.keys(LFO_TARGETS)) {
       const config = mods[key]
-      const target = LFO_TARGETS[key](nodes)
+      const entry = LFO_TARGETS[key]
+      const target = entry.target(nodes)
+      const scale = entry.scale ?? 1
       const spec = MOD_SPEC[key]
       const base = bases[key]
       const existing = router.map.get(key)
@@ -1500,10 +1536,10 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
       }
       nextSkip.add(key)
       if (existing) existing.update(config, base)
-      else router.map.set(key, attachLfo(ctx, target, base, config, spec))
+      else router.map.set(key, attachLfo(ctx, target, base, config, spec, scale))
     }
     router.skipKeys = nextSkip
-  }, [modulators, filterHz, filterQ, reverbWet, wet, panCenter, voiceGain, delayTime, delayFb, nodesReadyV, getAudioCtx])
+  }, [modulators, filterHz, filterQ, reverbWet, wet, panCenter, voiceGain, delayTime, delayFb, flangerMix, flangerFb, freezeMix, flangerDepth, wowDepth, nodesReadyV, getAudioCtx])
 
   // Push the current buffer into the freeze worklet whenever it changes.
   // Independent clone from the granulator's copy — transferable ownership
@@ -1512,6 +1548,7 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
   useEffect(() => {
     const freezeNode = nodesRef.current?.modules?.freeze?.freezeNode
     if (!freezeNode || !buffer) return
+    const prevId = freezeBufferIdRef.current
     const id = ++freezeBufferIdRef.current
     const chans = []
     for (let c = 0; c < buffer.numberOfChannels; c++) {
@@ -1520,6 +1557,7 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
       chans.push(copy)
     }
     freezeNode.port.postMessage({ type: 'loadBuffer', id, channels: chans }, chans.map(c => c.buffer))
+    if (prevId > 0) freezeNode.port.postMessage({ type: 'freeBuffer', id: prevId })
   }, [buffer, nodesReadyV])
 
   const onScrub = useCallback((p, delta, phase) => {
