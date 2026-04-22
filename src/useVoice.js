@@ -17,7 +17,9 @@ function modulatedValue(key, base, mod) {
   return Math.max(spec.min, Math.min(spec.max, value))
 }
 
-export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = null, reverbBus = null) {
+export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = null, audioNodes = null) {
+  const reverbBus = audioNodes?.reverbBus || null
+  const bandReverbBus = audioNodes?.bandReverbBus || null
   const { getAudioCtx, getBuffer, pool } = useStore()
   const [buffer, setBuffer] = useState(null)
   const [sourceName, setSourceName] = useState('')
@@ -871,28 +873,30 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
       }
     }
 
-    // Band Reverb: splits the signal into N bandpass paths, each through its
-    // own convolver reverb with an independently sized / shaped IR.
+    // Band Reverb — shared-bus design (profile sharing).
+    // The expensive per-band bandpass→convolver→gain fan lives on
+    // audioNodes.bandReverbBus, keyed by bands|size|spread|decay. Voices
+    // with matching config dedup to one fan; distinct configs get distinct
+    // fans. Six voices on the same bandReverb settings = one 6-convolver
+    // fan total instead of 36.
+    // In-chain this module is a dry passthrough; the wet goes as a parallel
+    // send via wetGain → bus fan → mixer (outside the voice chain, same
+    // tradeoff as reverb).
+    // Fallback (no bus provided): old per-voice in-chain fan.
     { const input = G(), output = G()
       const dry = G(1)
       const wet = G(0)
       input.connect(dry).connect(output)
       wet.connect(output)
       const bandReverbBandsRef = { value: [] }
-      // Convolvers stay torn down until the effect is active — leaving 6
-      // convolution paths processing input silently is enough to overload
-      // mobile audio worklets and silence playback.
-      const rebuildBands = (n, sizeSec, spread, decay, active) => {
-        for (const b of bandReverbBandsRef.value) {
-          try { input.disconnect(b.bpf) } catch {}
-          try { b.bpf.disconnect() } catch {}
-          try { b.convolver.disconnect() } catch {}
-          try { b.gain.disconnect() } catch {}
-        }
-        bandReverbBandsRef.value = []
-        if (!active) return
+      const mod = {
+        input, output, dry, wet,
+        bandsRef: bandReverbBandsRef,
+        profileKey: null, profileHandle: null,
+      }
+      const buildFan = (fanInput, fanOutput) => {
+        const N = Math.max(1, Math.min(12, bandReverbBands | 0))
         const fresh = []
-        const N = Math.max(1, Math.min(12, n | 0))
         for (let i = 0; i < N; i++) {
           const bpf = ctx.createBiquadFilter()
           bpf.type = 'bandpass'
@@ -903,24 +907,56 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
           const rn = ((r % 1) + 1) % 1
           const lowBias = 1 - t
           const variation = (rn - 0.5) * 2
-          // Narrow high-band IR tail is inaudible past ~1s anyway — clamp
-          // max duration per band (t=0 → 6s, t=1 → 0.5s). Cuts convolver
-          // cost roughly linearly with IR length without altering character.
           const maxDur = 0.5 + (1 - t) * 5.5
-          const rawDur = sizeSec * (0.5 + lowBias * 0.7 + variation * spread * 0.6)
+          const rawDur = bandReverbSize * (0.5 + lowBias * 0.7 + variation * bandReverbSpread * 0.6)
           const dur = Math.max(0.1, Math.min(maxDur, rawDur))
           const convolver = ctx.createConvolver()
-          convolver.buffer = makeReverbIR(ctx, dur, Math.max(0.5, decay))
+          convolver.buffer = makeReverbIR(ctx, dur, Math.max(0.5, bandReverbDecay))
           const gain = G(1)
-          input.connect(bpf).connect(convolver).connect(gain).connect(wet)
+          fanInput.connect(bpf).connect(convolver).connect(gain).connect(fanOutput)
           fresh.push({ bpf, convolver, gain })
         }
-        bandReverbBandsRef.value = fresh
+        return fresh
       }
-      rebuildBands(bandReverbBands, bandReverbSize, bandReverbSpread, bandReverbDecay, bandReverbActive)
-      modules.bandreverb = {
-        input, output, dry, wet, bandsRef: bandReverbBandsRef, rebuildBands,
+      if (bandReverbBus) {
+        // SEND path. `wet` is repurposed as the per-voice send scale: its
+        // gain is already driven by bandReverbGain/active in the existing
+        // useEffect, so routing input → wet → bus.input gives us the same
+        // per-voice wet control for free. The shared bus fan output lands
+        // on the mixer directly.
+        try { wet.disconnect() } catch {}  // unwire the local wet→output path
+        input.connect(wet)
+        mod.rebuildBands = (_n, _sz, _spr, _dc, active) => {
+          try { wet.disconnect() } catch {}
+          if (mod.profileHandle) { mod.profileHandle.release(); mod.profileHandle = null; mod.profileKey = null }
+          bandReverbBandsRef.value = []
+          if (!active) return
+          const key = `${bandReverbBands | 0}|${bandReverbSize.toFixed(2)}|${bandReverbSpread.toFixed(2)}|${bandReverbDecay.toFixed(2)}`
+          mod.profileHandle = bandReverbBus.acquire(key, buildFan)
+          mod.profileKey = key
+          try { wet.connect(mod.profileHandle.input) } catch {}
+        }
+        mod.releaseProfile = () => {
+          try { wet.disconnect() } catch {}
+          if (mod.profileHandle) { mod.profileHandle.release(); mod.profileHandle = null; mod.profileKey = null }
+          bandReverbBandsRef.value = []
+        }
+      } else {
+        // FALLBACK — per-voice in-chain fan (original behavior).
+        mod.rebuildBands = (_n, _sz, _spr, _dc, active) => {
+          for (const b of bandReverbBandsRef.value) {
+            try { input.disconnect(b.bpf) } catch {}
+            try { b.bpf.disconnect() } catch {}
+            try { b.convolver.disconnect() } catch {}
+            try { b.gain.disconnect() } catch {}
+          }
+          bandReverbBandsRef.value = []
+          if (!active) return
+          bandReverbBandsRef.value = buildFan(input, wet)
+        }
       }
+      mod.rebuildBands(bandReverbBands, bandReverbSize, bandReverbSpread, bandReverbDecay, bandReverbActive)
+      modules.bandreverb = mod
     }
 
     // Auto Pan — lazy LFO; StereoPanner stays in the graph.

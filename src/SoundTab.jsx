@@ -47,7 +47,40 @@ export function SoundTab({ selectedPoolId }) {
         }
       },
     }
-    return { busInput, master, feedback, msDest, mixer: busInput, reverbBus }
+    // Shared band-reverb bus — same refcount pattern, but each profile owns
+    // a fan of N bandpass→convolver→gain chains (the expensive bit). Voices
+    // with matching bandReverb config (bands|size|spread|decay) share the
+    // whole fan. Six voices all on bandReverbBands=6 size=2 spread=0.5
+    // decay=3 = 6 convolvers total instead of 36.
+    const bandReverbProfiles = new Map()
+    const bandReverbBus = {
+      acquire(key, buildFan) {
+        let entry = bandReverbProfiles.get(key)
+        if (!entry) {
+          const input = ctx.createGain(); input.gain.value = 1
+          const fan = buildFan(input, busInput)
+          entry = { input, fan, refCount: 0 }
+          bandReverbProfiles.set(key, entry)
+        }
+        entry.refCount++
+        return {
+          input: entry.input,
+          release: () => {
+            entry.refCount--
+            if (entry.refCount === 0) {
+              try { entry.input.disconnect() } catch {}
+              for (const b of entry.fan) {
+                try { b.bpf.disconnect() } catch {}
+                try { b.convolver.disconnect() } catch {}
+                try { b.gain.disconnect() } catch {}
+              }
+              bandReverbProfiles.delete(key)
+            }
+          },
+        }
+      },
+    }
+    return { busInput, master, feedback, msDest, mixer: busInput, reverbBus, bandReverbBus }
   })
 
   // live howlround amount
@@ -74,12 +107,12 @@ export function SoundTab({ selectedPoolId }) {
   const onSnap4 = mkSnapCb(4)
   const onSnap5 = mkSnapCb(5)
 
-  const v0 = useVoice(1, audioNodes.mixer, soundState.voices[0], onSnap0, audioNodes.reverbBus)
-  const v1 = useVoice(2, audioNodes.mixer, soundState.voices[1], onSnap1, audioNodes.reverbBus)
-  const v2 = useVoice(3, audioNodes.mixer, soundState.voices[2], onSnap2, audioNodes.reverbBus)
-  const v3 = useVoice(4, audioNodes.mixer, soundState.voices[3], onSnap3, audioNodes.reverbBus)
-  const v4 = useVoice(5, audioNodes.mixer, soundState.voices[4], onSnap4, audioNodes.reverbBus)
-  const v5 = useVoice(6, audioNodes.mixer, soundState.voices[5], onSnap5, audioNodes.reverbBus)
+  const v0 = useVoice(1, audioNodes.mixer, soundState.voices[0], onSnap0, audioNodes)
+  const v1 = useVoice(2, audioNodes.mixer, soundState.voices[1], onSnap1, audioNodes)
+  const v2 = useVoice(3, audioNodes.mixer, soundState.voices[2], onSnap2, audioNodes)
+  const v3 = useVoice(4, audioNodes.mixer, soundState.voices[3], onSnap3, audioNodes)
+  const v4 = useVoice(5, audioNodes.mixer, soundState.voices[4], onSnap4, audioNodes)
+  const v5 = useVoice(6, audioNodes.mixer, soundState.voices[5], onSnap5, audioNodes)
   const voices = [v0, v1, v2, v3, v4, v5]
 
   const voiceCount = Math.min(MAX_VOICES, Math.max(1, soundState.voiceCount || 2))
