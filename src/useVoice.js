@@ -17,7 +17,7 @@ function modulatedValue(key, base, mod) {
   return Math.max(spec.min, Math.min(spec.max, value))
 }
 
-export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = null) {
+export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = null, reverbBus = null) {
   const { getAudioCtx, getBuffer, pool } = useStore()
   const [buffer, setBuffer] = useState(null)
   const [sourceName, setSourceName] = useState('')
@@ -819,28 +819,62 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
       tapeDelay.connect(tapeWetGain).connect(output)
       modules.delay = { input, output, delayDry, tapeDelay, tapeFbGain, tapeWetGain } }
 
-    // Reverb (internal wet/dry) — convolver is bypassed from the graph when
-    // !reverbActive || reverbWet === 0. Disconnecting input→reverb and
-    // reverb→reverbWetGain lets the browser skip the convolution work
-    // entirely (vs leaving a long-IR ConvolverNode churning with wet gain 0).
+    // Reverb — shared send-bus design (profile sharing).
+    // In-chain this module is a dry pass-through; the wet goes as a parallel
+    // send into a shared ConvolverNode on audioNodes.reverbBus, keyed by
+    // profile (user IR buffer or synthetic size bucket). Voices with matching
+    // profiles dedup to one convolver; distinct profiles get distinct ones.
+    // Trade-off: reverb position in effectOrder is now only about where the
+    // send tap sits in the chain; the wet return lands at the mixer, outside
+    // the voice's post-reverb effects. If reverbBus is unavailable (standalone
+    // usage), we fall back to the old in-chain convolver.
     { const input = G(), output = G(), reverbDry = G(1)
-      const reverb = ctx.createConvolver(); reverb.buffer = makeReverbIR(ctx, reverbSize)
-      const reverbWetGain = G(reverbWet)
+      const reverbWetGain = G(0)
       input.connect(reverbDry).connect(output)
-      const mod = { input, output, reverbDry, reverb, reverbWetGain, wetConnected: false }
-      mod.connectWet = () => {
-        if (mod.wetConnected) return
-        try { input.connect(reverb) } catch {}
-        try { reverb.connect(reverbWetGain) } catch {}
-        try { reverbWetGain.connect(output) } catch {}
-        mod.wetConnected = true
+      input.connect(reverbWetGain)
+      const mod = {
+        input, output, reverbDry, reverbWetGain,
+        reverb: null, wetConnected: false,
+        profileKey: null, profileHandle: null,
       }
-      mod.disconnectWet = () => {
-        if (!mod.wetConnected) return
-        try { input.disconnect(reverb) } catch {}
-        try { reverb.disconnect() } catch {}
-        try { reverbWetGain.disconnect() } catch {}
-        mod.wetConnected = false
+      if (reverbBus) {
+        // SEND path — acquire a profile handle and route send→shared convolver.
+        mod.acquireProfile = () => {
+          const key = reverbIRPoolId ? `ir:${reverbIRPoolId}` : `syn:${reverbSize.toFixed(2)}`
+          if (mod.profileKey === key && mod.profileHandle) return
+          if (mod.profileHandle) { try { reverbWetGain.disconnect() } catch {}; mod.profileHandle.release(); mod.profileHandle = null }
+          const produceIR = () => {
+            const buf = reverbIRPoolId && getBuffer ? getBuffer(reverbIRPoolId) : null
+            return buf || makeReverbIR(ctx, reverbSize)
+          }
+          mod.profileHandle = reverbBus.acquire(key, produceIR)
+          try { reverbWetGain.connect(mod.profileHandle.conv) } catch {}
+          mod.profileKey = key
+        }
+        mod.releaseProfile = () => {
+          try { reverbWetGain.disconnect() } catch {}
+          if (mod.profileHandle) { mod.profileHandle.release(); mod.profileHandle = null; mod.profileKey = null }
+        }
+        mod.connectWet = () => { mod.acquireProfile(); mod.wetConnected = true }
+        mod.disconnectWet = () => { mod.releaseProfile(); mod.wetConnected = false }
+      } else {
+        // FALLBACK — keep the old per-voice in-chain convolver path.
+        const reverb = ctx.createConvolver(); reverb.buffer = makeReverbIR(ctx, reverbSize)
+        mod.reverb = reverb
+        mod.connectWet = () => {
+          if (mod.wetConnected) return
+          try { input.connect(reverb) } catch {}
+          try { reverb.connect(reverbWetGain) } catch {}
+          try { reverbWetGain.connect(output) } catch {}
+          mod.wetConnected = true
+        }
+        mod.disconnectWet = () => {
+          if (!mod.wetConnected) return
+          try { input.disconnect(reverb) } catch {}
+          try { reverb.disconnect() } catch {}
+          try { reverbWetGain.disconnect() } catch {}
+          mod.wetConnected = false
+        }
       }
       if (reverbActive && reverbWet > 0) mod.connectWet()
       modules.reverb = mod
@@ -1149,6 +1183,10 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
     if (modules) {
       for (const m of Object.values(modules)) {
         if (typeof m.teardownLfo === 'function') { try { m.teardownLfo() } catch {} }
+        // Release any profile reference (shared reverb bus handle). Without
+        // this the bus's refCount never decrements on voice teardown, so the
+        // shared convolver would leak even after the last voice lets go.
+        if (typeof m.releaseProfile === 'function') { try { m.releaseProfile() } catch {} }
       }
     }
     Object.values(rest).forEach(n => { try { n.disconnect() } catch {} })
@@ -1491,17 +1529,23 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
     if (!nodesRef.current) return
     nodesRef.current.tapeWetGain.gain.value = delayActive ? wet : 0
   }, [wet, delayActive])
-  // Use a user-loaded IR if assigned; otherwise fall back to the synthesized IR.
+  // Reverb IR config change — on the shared-bus path, this means dropping
+  // the old profile handle and acquiring a new one keyed to the new config.
+  // On the fallback per-voice path, just rewrite the convolver buffer.
   useEffect(() => {
-    if (!nodesRef.current) return
-    if (reverbIRPoolId) {
-      const buf = getBuffer(reverbIRPoolId)
-      if (buf) {
-        nodesRef.current.reverb.buffer = buf
-        return
+    const m = nodesRef.current?.modules?.reverb
+    if (!m) return
+    if (m.acquireProfile) {
+      // Shared bus: re-acquire if the profile actually changed AND we're
+      // currently wired up (wet > 0). acquireProfile is idempotent on key.
+      if (m.wetConnected) m.acquireProfile()
+    } else if (m.reverb) {
+      if (reverbIRPoolId) {
+        const buf = getBuffer(reverbIRPoolId)
+        if (buf) { m.reverb.buffer = buf; return }
       }
+      m.reverb.buffer = makeReverbIR(getAudioCtx(), reverbSize)
     }
-    nodesRef.current.reverb.buffer = makeReverbIR(getAudioCtx(), reverbSize)
   }, [reverbSize, reverbIRPoolId, getAudioCtx, getBuffer])
   // reverb: when off, bypass the convolver from the graph entirely so the
   // browser can skip the convolution work. Leaving a long-IR ConvolverNode

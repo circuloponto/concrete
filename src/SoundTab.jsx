@@ -17,7 +17,37 @@ export function SoundTab({ selectedPoolId }) {
     master.connect(msDest)
     master.connect(feedback)
     feedback.connect(busInput)
-    return { busInput, master, feedback, msDest, mixer: busInput }
+    // Shared reverb bus — voices with matching IR config (either a synthetic
+    // size bucket or a user IR buffer) share a single ConvolverNode. Each
+    // voice routes input through its own send gain into the shared convolver
+    // of its profile; the convolver's output returns to the mixer. Distinct
+    // profiles get distinct convolvers, so per-voice character is preserved
+    // when voices want it. Identical configs dedup to one convolver.
+    const reverbProfiles = new Map()
+    const reverbBus = {
+      acquire(key, produceIR) {
+        let entry = reverbProfiles.get(key)
+        if (!entry) {
+          const conv = ctx.createConvolver()
+          conv.buffer = produceIR()
+          conv.connect(busInput)
+          entry = { conv, refCount: 0 }
+          reverbProfiles.set(key, entry)
+        }
+        entry.refCount++
+        return {
+          conv: entry.conv,
+          release: () => {
+            entry.refCount--
+            if (entry.refCount === 0) {
+              try { entry.conv.disconnect() } catch {}
+              reverbProfiles.delete(key)
+            }
+          },
+        }
+      },
+    }
+    return { busInput, master, feedback, msDest, mixer: busInput, reverbBus }
   })
 
   // live howlround amount
@@ -44,12 +74,12 @@ export function SoundTab({ selectedPoolId }) {
   const onSnap4 = mkSnapCb(4)
   const onSnap5 = mkSnapCb(5)
 
-  const v0 = useVoice(1, audioNodes.mixer, soundState.voices[0], onSnap0)
-  const v1 = useVoice(2, audioNodes.mixer, soundState.voices[1], onSnap1)
-  const v2 = useVoice(3, audioNodes.mixer, soundState.voices[2], onSnap2)
-  const v3 = useVoice(4, audioNodes.mixer, soundState.voices[3], onSnap3)
-  const v4 = useVoice(5, audioNodes.mixer, soundState.voices[4], onSnap4)
-  const v5 = useVoice(6, audioNodes.mixer, soundState.voices[5], onSnap5)
+  const v0 = useVoice(1, audioNodes.mixer, soundState.voices[0], onSnap0, audioNodes.reverbBus)
+  const v1 = useVoice(2, audioNodes.mixer, soundState.voices[1], onSnap1, audioNodes.reverbBus)
+  const v2 = useVoice(3, audioNodes.mixer, soundState.voices[2], onSnap2, audioNodes.reverbBus)
+  const v3 = useVoice(4, audioNodes.mixer, soundState.voices[3], onSnap3, audioNodes.reverbBus)
+  const v4 = useVoice(5, audioNodes.mixer, soundState.voices[4], onSnap4, audioNodes.reverbBus)
+  const v5 = useVoice(6, audioNodes.mixer, soundState.voices[5], onSnap5, audioNodes.reverbBus)
   const voices = [v0, v1, v2, v3, v4, v5]
 
   const voiceCount = Math.min(MAX_VOICES, Math.max(1, soundState.voiceCount || 2))
