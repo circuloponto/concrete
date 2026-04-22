@@ -5,6 +5,7 @@ import { applyModulation, DEFAULT_MOD, MOD_SPEC, lfoWave } from './modulation'
 import { createStretchShim } from './audio/stretchShim'
 import { isWorkletReady, ensureWorklets } from './audio/workletHost'
 import { attachLfo, LFO_TARGETS } from './audio/lfoRouter'
+import { getIRSync } from './audio/irCache'
 
 const VIRTUAL_MOD_KEYS = ['granPos', 'granDensity', 'granPitch', 'dopplerSpeed', 'freezePos']
 
@@ -695,7 +696,7 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
           if (mod.profileHandle) { try { reverbWetGain.disconnect() } catch {}; mod.profileHandle.release(); mod.profileHandle = null }
           const produceIR = () => {
             const buf = reverbIRPoolId && getBuffer ? getBuffer(reverbIRPoolId) : null
-            return buf || makeReverbIR(ctx, reverbSize)
+            return buf || getIRSync(ctx, key, reverbSize, 3)
           }
           mod.profileHandle = reverbBus.acquire(key, produceIR)
           try { reverbWetGain.connect(mod.profileHandle.conv) } catch {}
@@ -709,7 +710,7 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
         mod.disconnectWet = () => { mod.releaseProfile(); mod.wetConnected = false }
       } else {
         // FALLBACK — keep the old per-voice in-chain convolver path.
-        const reverb = ctx.createConvolver(); reverb.buffer = makeReverbIR(ctx, reverbSize)
+        const reverb = ctx.createConvolver(); reverb.buffer = getIRSync(ctx, `syn:${reverbSize.toFixed(2)}`, reverbSize, 3)
         mod.reverb = reverb
         mod.connectWet = () => {
           if (mod.wetConnected) return
@@ -939,7 +940,11 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
           const rawDur = bandReverbSize * (0.5 + lowBias * 0.7 + variation * bandReverbSpread * 0.6)
           const dur = Math.max(0.1, Math.min(maxDur, rawDur))
           const convolver = ctx.createConvolver()
-          convolver.buffer = makeReverbIR(ctx, dur, Math.max(0.5, bandReverbDecay))
+          // Band IR keys embed the per-band duration + decay so each band's
+          // IR is independently cached. The fan-level profileKey keyed the
+          // BUS entry; this key dedupes the IR AudioBuffer within it.
+          const irKey = `br:${dur.toFixed(3)}:${Math.max(0.5, bandReverbDecay).toFixed(2)}`
+          convolver.buffer = getIRSync(ctx, irKey, dur, Math.max(0.5, bandReverbDecay))
           const gain = G(1)
           fanInput.connect(bpf).connect(convolver).connect(gain).connect(fanOutput)
           fresh.push({ bpf, convolver, gain })
@@ -1437,7 +1442,8 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
         const buf = getBuffer(reverbIRPoolId)
         if (buf) { m.reverb.buffer = buf; return }
       }
-      m.reverb.buffer = makeReverbIR(getAudioCtx(), reverbSize)
+      const ctx = getAudioCtx()
+      m.reverb.buffer = getIRSync(ctx, `syn:${reverbSize.toFixed(2)}`, reverbSize, 3)
     }
   }, [reverbSize, reverbIRPoolId, getAudioCtx, getBuffer])
   // reverb: when off, bypass the convolver from the graph entirely so the

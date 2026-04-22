@@ -1,6 +1,7 @@
 import { createContext, useContext, useRef, useState, useCallback } from 'react'
 import { bufferToBase64, base64ToBuffer } from './audio'
 import { ensureWorklets } from './audio/workletHost'
+import { prewarmCommonIRs } from './audio/irCache'
 
 const Ctx = createContext(null)
 
@@ -154,6 +155,10 @@ export function StateProvider({ children }) {
     if (!audioCtxRef.current) {
       audioCtxRef.current = new (window.AudioContext || window.webkitAudioContext)()
       ensureWorklets(audioCtxRef.current)
+      // Fire-and-forget: pre-generate common synthetic reverb IR sizes on a
+      // worker so the first activation of reverb doesn't jank on low-end
+      // mobile (30–80 ms for a 3s IR at 44.1 kHz otherwise).
+      prewarmCommonIRs(audioCtxRef.current)
     }
     if (audioCtxRef.current.state === 'suspended') audioCtxRef.current.resume()
     return audioCtxRef.current

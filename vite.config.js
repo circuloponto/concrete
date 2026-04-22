@@ -10,6 +10,7 @@ export default defineConfig({
     // worklets (signalsmith-stretch et al) would bloat the main chunk if inlined.
     assetsInlineLimit: (filePath) => {
       if (/\.worklet\.(js|ts)$/.test(filePath)) return 0
+      if (/\.worker\.(js|ts)$/.test(filePath)) return 0
       if (/\.wasm$/.test(filePath)) return 0
       return 4096
     },
