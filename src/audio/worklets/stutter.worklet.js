@@ -121,6 +121,24 @@ class StutterProcessor extends AudioWorkletProcessor {
         wetL = this.ringL[ri]
         wetR = this.ringR[ri]
 
+        // Trapezoidal envelope per repeat — fade in at the start, fade out
+        // at the end. Kills the click you get when the slice-start sample
+        // isn't zero (which it almost never is). 3ms nominal, auto-shrinks
+        // to interval/4 for very short intervals so the shape stays sane.
+        const interval = this.burstCurrentInterval
+        const pos = this.burstReadOffset
+        const fadeSamples = Math.min(
+          Math.floor(0.003 * sampleRate),
+          Math.floor(interval / 4)
+        )
+        let env = 1
+        if (fadeSamples > 0) {
+          if (pos < fadeSamples) env = pos / fadeSamples
+          else if (pos >= interval - fadeSamples) env = Math.max(0, (interval - pos) / fadeSamples)
+        }
+        wetL *= env
+        wetR *= env
+
         this.burstReadOffset++
         if (this.burstReadOffset >= this.burstCurrentInterval) {
           // Advance to next repeat
