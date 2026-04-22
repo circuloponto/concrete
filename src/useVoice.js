@@ -819,13 +819,32 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
       tapeDelay.connect(tapeWetGain).connect(output)
       modules.delay = { input, output, delayDry, tapeDelay, tapeFbGain, tapeWetGain } }
 
-    // Reverb (internal wet/dry)
+    // Reverb (internal wet/dry) — convolver is bypassed from the graph when
+    // !reverbActive || reverbWet === 0. Disconnecting input→reverb and
+    // reverb→reverbWetGain lets the browser skip the convolution work
+    // entirely (vs leaving a long-IR ConvolverNode churning with wet gain 0).
     { const input = G(), output = G(), reverbDry = G(1)
       const reverb = ctx.createConvolver(); reverb.buffer = makeReverbIR(ctx, reverbSize)
       const reverbWetGain = G(reverbWet)
       input.connect(reverbDry).connect(output)
-      input.connect(reverb).connect(reverbWetGain).connect(output)
-      modules.reverb = { input, output, reverbDry, reverb, reverbWetGain } }
+      const mod = { input, output, reverbDry, reverb, reverbWetGain, wetConnected: false }
+      mod.connectWet = () => {
+        if (mod.wetConnected) return
+        try { input.connect(reverb) } catch {}
+        try { reverb.connect(reverbWetGain) } catch {}
+        try { reverbWetGain.connect(output) } catch {}
+        mod.wetConnected = true
+      }
+      mod.disconnectWet = () => {
+        if (!mod.wetConnected) return
+        try { input.disconnect(reverb) } catch {}
+        try { reverb.disconnect() } catch {}
+        try { reverbWetGain.disconnect() } catch {}
+        mod.wetConnected = false
+      }
+      if (reverbActive && reverbWet > 0) mod.connectWet()
+      modules.reverb = mod
+    }
 
     // Granulator (injects grains; when active, can duck input)
     { const input = G(), output = G()
@@ -1484,10 +1503,15 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
     }
     nodesRef.current.reverb.buffer = makeReverbIR(getAudioCtx(), reverbSize)
   }, [reverbSize, reverbIRPoolId, getAudioCtx, getBuffer])
-  // reverb: when off, wet = 0
+  // reverb: when off, bypass the convolver from the graph entirely so the
+  // browser can skip the convolution work. Leaving a long-IR ConvolverNode
+  // wired with wet gain 0 still burns audio-thread cycles on mobile.
   useEffect(() => {
-    if (!nodesRef.current) return
-    nodesRef.current.reverbWetGain.gain.value = reverbActive ? reverbWet : 0
+    const m = nodesRef.current?.modules?.reverb
+    if (!m) return
+    m.reverbWetGain.gain.value = reverbActive ? reverbWet : 0
+    if (reverbActive && reverbWet > 0) m.connectWet()
+    else m.disconnectWet()
   }, [reverbWet, reverbActive])
   useEffect(() => {
     if (!nodesRef.current) return
