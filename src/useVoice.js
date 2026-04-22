@@ -657,14 +657,29 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
       input.connect(sat).connect(output)
       modules.saturation = { input, output, sat } }
 
-    // Wow/Flutter
+    // Wow/Flutter — LFO is built on-activate (below), the delay line stays in
+    // the graph but costs nothing until modulated.
     { const input = G(), output = G()
       const wowDelay = ctx.createDelay(0.05); wowDelay.delayTime.value = 0.008
-      const wowLfo = mkOsc(wowRate || 0.01, 'sine')
       const wowDepthGain = G(wowDepth * 0.005)
-      wowLfo.connect(wowDepthGain).connect(wowDelay.delayTime)
       input.connect(wowDelay).connect(output)
-      modules.wow = { input, output, wowDelay, wowLfo, wowDepthGain } }
+      const mod = { input, output, wowDelay, wowDepthGain, wowLfo: null }
+      mod.buildLfo = (rate) => {
+        if (mod.wowLfo) return
+        const osc = ctx.createOscillator(); osc.type = 'sine'
+        osc.frequency.value = Math.max(0.01, rate || 0.01)
+        osc.connect(mod.wowDepthGain); osc.start()
+        mod.wowLfo = osc
+      }
+      mod.teardownLfo = () => {
+        if (!mod.wowLfo) return
+        try { mod.wowLfo.stop() } catch {}
+        try { mod.wowLfo.disconnect() } catch {}
+        mod.wowLfo = null
+      }
+      if (wowActive) mod.buildLfo(wowRate)
+      modules.wow = mod
+    }
 
     // Filter
     { const input = G(), output = G()
@@ -673,34 +688,78 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
       input.connect(filter).connect(output)
       modules.filter = { input, output, filter } }
 
-    // Ring Modulator
+    // Ring Modulator — dry + wet paths stay wired; the carrier osc is lazy.
     { const input = G(), output = G()
       const ringDry = G(1 - ringAmount), ringWet = G(0), ringMix = G(ringAmount)
-      const ringOsc = mkOsc(ringFreq, 'sine'), ringDepth = G(1)
-      ringOsc.connect(ringDepth).connect(ringWet.gain)
+      const ringDepth = G(1)
       input.connect(ringDry).connect(output)
       input.connect(ringWet).connect(ringMix).connect(output)
-      modules.ringmod = { input, output, ringDry, ringWet, ringMix, ringOsc, ringDepth } }
+      const mod = { input, output, ringDry, ringWet, ringMix, ringDepth, ringOsc: null }
+      mod.buildLfo = (freq) => {
+        if (mod.ringOsc) return
+        const osc = ctx.createOscillator(); osc.type = 'sine'
+        osc.frequency.value = freq
+        osc.connect(mod.ringDepth).connect(mod.ringWet.gain); osc.start()
+        mod.ringOsc = osc
+      }
+      mod.teardownLfo = () => {
+        if (!mod.ringOsc) return
+        try { mod.ringOsc.stop() } catch {}
+        try { mod.ringOsc.disconnect() } catch {}
+        mod.ringOsc = null
+      }
+      if (ringActive) mod.buildLfo(ringFreq)
+      modules.ringmod = mod
+    }
 
-    // Tremolo
+    // Tremolo — lazy LFO.
     { const input = G(), output = G()
       const tremoloGain = G(1 - tremDepth / 2)
-      const tremoloLfo = mkOsc(Math.max(0.01, tremRate), 'sine')
       const tremoloDepthGain = G(tremDepth / 2)
-      tremoloLfo.connect(tremoloDepthGain).connect(tremoloGain.gain)
       input.connect(tremoloGain).connect(output)
-      modules.tremolo = { input, output, tremoloGain, tremoloLfo, tremoloDepthGain } }
+      const mod = { input, output, tremoloGain, tremoloDepthGain, tremoloLfo: null }
+      mod.buildLfo = (rate) => {
+        if (mod.tremoloLfo) return
+        const osc = ctx.createOscillator(); osc.type = 'sine'
+        osc.frequency.value = Math.max(0.01, rate)
+        osc.connect(mod.tremoloDepthGain).connect(mod.tremoloGain.gain); osc.start()
+        mod.tremoloLfo = osc
+      }
+      mod.teardownLfo = () => {
+        if (!mod.tremoloLfo) return
+        try { mod.tremoloLfo.stop() } catch {}
+        try { mod.tremoloLfo.disconnect() } catch {}
+        mod.tremoloLfo = null
+      }
+      if (tremActive) mod.buildLfo(tremRate)
+      modules.tremolo = mod
+    }
 
-    // Flanger (internal wet/dry)
+    // Flanger — lazy LFO; delay line + feedback stay built.
     { const input = G(), output = G(), flangerDry = G(1)
       const flangerDelay = ctx.createDelay(0.05); flangerDelay.delayTime.value = 0.002
-      const flangerLfo = mkOsc(flangerRate, 'sine'), flangerDepthGain = G(flangerDepth * 0.002)
-      flangerLfo.connect(flangerDepthGain).connect(flangerDelay.delayTime)
+      const flangerDepthGain = G(flangerDepth * 0.002)
       const flangerFbGain = G(flangerFb), flangerMixGain = G(flangerMix)
       input.connect(flangerDry).connect(output)
       input.connect(flangerDelay); flangerDelay.connect(flangerFbGain).connect(flangerDelay)
       flangerDelay.connect(flangerMixGain).connect(output)
-      modules.flanger = { input, output, flangerDry, flangerDelay, flangerLfo, flangerDepthGain, flangerFbGain, flangerMixGain } }
+      const mod = { input, output, flangerDry, flangerDelay, flangerDepthGain, flangerFbGain, flangerMixGain, flangerLfo: null }
+      mod.buildLfo = (rate) => {
+        if (mod.flangerLfo) return
+        const osc = ctx.createOscillator(); osc.type = 'sine'
+        osc.frequency.value = rate
+        osc.connect(mod.flangerDepthGain).connect(mod.flangerDelay.delayTime); osc.start()
+        mod.flangerLfo = osc
+      }
+      mod.teardownLfo = () => {
+        if (!mod.flangerLfo) return
+        try { mod.flangerLfo.stop() } catch {}
+        try { mod.flangerLfo.disconnect() } catch {}
+        mod.flangerLfo = null
+      }
+      if (flangerActive) mod.buildLfo(flangerRate)
+      modules.flanger = mod
+    }
 
     // Tape Delay (internal wet/dry)
     { const input = G(), output = G(), delayDry = G(1)
@@ -928,15 +987,29 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
       }
     }
 
-    // Auto Pan
+    // Auto Pan — lazy LFO; StereoPanner stays in the graph.
     { const input = G(), output = G()
-      const validWave = ['sine', 'triangle', 'square', 'sawtooth'].includes(panWave) ? panWave : 'sine'
       const autoPan = ctx.createStereoPanner(); autoPan.pan.value = panCenter
-      const panLfo = mkOsc(Math.max(0.01, panRate), validWave)
       const panDepthGain = G(panActive ? panDepth : 0)
-      panLfo.connect(panDepthGain).connect(autoPan.pan)
       input.connect(autoPan).connect(output)
-      modules.autopan = { input, output, autoPan, panLfo, panDepthGain } }
+      const mod = { input, output, autoPan, panDepthGain, panLfo: null }
+      mod.buildLfo = (rate, wave) => {
+        if (mod.panLfo) return
+        const validWave = ['sine', 'triangle', 'square', 'sawtooth'].includes(wave) ? wave : 'sine'
+        const osc = ctx.createOscillator(); osc.type = validWave
+        osc.frequency.value = Math.max(0.01, rate)
+        osc.connect(mod.panDepthGain).connect(mod.autoPan.pan); osc.start()
+        mod.panLfo = osc
+      }
+      mod.teardownLfo = () => {
+        if (!mod.panLfo) return
+        try { mod.panLfo.stop() } catch {}
+        try { mod.panLfo.disconnect() } catch {}
+        mod.panLfo = null
+      }
+      if (panActive) mod.buildLfo(panRate, panWave)
+      modules.autopan = mod
+    }
 
     // ---- Wire the chain in effectOrder ----
     const order = effectOrderRef.current
@@ -976,12 +1049,18 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
 
   const teardownEffects = useCallback(() => {
     if (!nodesRef.current) return
-    const { oscs, cqFilters, ...rest } = nodesRef.current
+    const { oscs, cqFilters, modules, ...rest } = nodesRef.current
     if (oscs) oscs.forEach(o => { try { o.stop() } catch {} })
     if (cqFilters) cqFilters.forEach(({ filter, gain }) => {
       try { filter.disconnect() } catch {}
       try { gain.disconnect() } catch {}
     })
+    // Lazy-built LFOs live outside oscs; tear them down via their modules.
+    if (modules) {
+      for (const m of Object.values(modules)) {
+        if (typeof m.teardownLfo === 'function') { try { m.teardownLfo() } catch {} }
+      }
+    }
     Object.values(rest).forEach(n => { try { n.disconnect() } catch {} })
     nodesRef.current = null
   }, [])
@@ -1208,8 +1287,18 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
     if (!nodesRef.current) return
     nodesRef.current.sat.curve = makeSaturationCurve(satActive ? saturation : 0)
   }, [saturation, satActive])
-  // wow: when off, depth gain = 0 (LFO does not modulate the delay)
-  useEffect(() => { if (nodesRef.current) nodesRef.current.wowLfo.frequency.value = Math.max(0.01, wowRate) }, [wowRate])
+  // wow: LFO is lazy — built on activate, stopped on deactivate. Depth gain
+  // still zeroes on inactive as belt-and-suspenders during the transition.
+  useEffect(() => {
+    const m = nodesRef.current?.modules?.wow
+    if (!m) return
+    if (wowActive) m.buildLfo(wowRate)
+    else m.teardownLfo()
+  }, [wowActive])
+  useEffect(() => {
+    const lfo = nodesRef.current?.modules?.wow?.wowLfo
+    if (lfo) lfo.frequency.value = Math.max(0.01, wowRate)
+  }, [wowRate])
   useEffect(() => {
     if (!nodesRef.current) return
     nodesRef.current.wowDepthGain.gain.value = wowActive ? wowDepth * 0.005 : 0
@@ -1221,7 +1310,16 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
   }, [filterType, filterActive])
   useEffect(() => { if (nodesRef.current) nodesRef.current.filter.frequency.value = filterHz }, [filterHz])
   useEffect(() => { if (nodesRef.current) nodesRef.current.filter.Q.value = filterQ }, [filterQ])
-  useEffect(() => { if (nodesRef.current) nodesRef.current.ringOsc.frequency.value = ringFreq }, [ringFreq])
+  useEffect(() => {
+    const m = nodesRef.current?.modules?.ringmod
+    if (!m) return
+    if (ringActive) m.buildLfo(ringFreq)
+    else m.teardownLfo()
+  }, [ringActive])
+  useEffect(() => {
+    const osc = nodesRef.current?.modules?.ringmod?.ringOsc
+    if (osc) osc.frequency.value = ringFreq
+  }, [ringFreq])
   // ring mod: when off, dry=1, wet=0
   useEffect(() => {
     if (!nodesRef.current) return
@@ -1229,7 +1327,16 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
     nodesRef.current.ringDry.gain.value = 1 - amt
     nodesRef.current.ringMix.gain.value = amt
   }, [ringAmount, ringActive])
-  useEffect(() => { if (nodesRef.current) nodesRef.current.flangerLfo.frequency.value = Math.max(0.01, flangerRate) }, [flangerRate])
+  useEffect(() => {
+    const m = nodesRef.current?.modules?.flanger
+    if (!m) return
+    if (flangerActive) m.buildLfo(flangerRate)
+    else m.teardownLfo()
+  }, [flangerActive])
+  useEffect(() => {
+    const lfo = nodesRef.current?.modules?.flanger?.flangerLfo
+    if (lfo) lfo.frequency.value = Math.max(0.01, flangerRate)
+  }, [flangerRate])
   useEffect(() => { if (nodesRef.current) nodesRef.current.flangerDepthGain.gain.value = flangerDepth * 0.002 }, [flangerDepth])
   useEffect(() => { if (nodesRef.current) nodesRef.current.flangerFbGain.gain.value = flangerFb }, [flangerFb])
   // flanger: when off, mix = 0
@@ -1237,7 +1344,16 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
     if (!nodesRef.current) return
     nodesRef.current.flangerMixGain.gain.value = flangerActive ? flangerMix : 0
   }, [flangerMix, flangerActive])
-  useEffect(() => { if (nodesRef.current) nodesRef.current.tremoloLfo.frequency.value = Math.max(0.01, tremRate) }, [tremRate])
+  useEffect(() => {
+    const m = nodesRef.current?.modules?.tremolo
+    if (!m) return
+    if (tremActive) m.buildLfo(tremRate)
+    else m.teardownLfo()
+  }, [tremActive])
+  useEffect(() => {
+    const lfo = nodesRef.current?.modules?.tremolo?.tremoloLfo
+    if (lfo) lfo.frequency.value = Math.max(0.01, tremRate)
+  }, [tremRate])
   // tremolo: when off, gain stays at 1 with no modulation
   useEffect(() => {
     if (!nodesRef.current) return
@@ -1245,17 +1361,27 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
     nodesRef.current.tremoloGain.gain.value = 1 - d / 2
     nodesRef.current.tremoloDepthGain.gain.value = d / 2
   }, [tremDepth, tremActive])
-  // auto-pan
-  useEffect(() => { if (nodesRef.current) nodesRef.current.panLfo.frequency.value = Math.max(0.01, panRate) }, [panRate])
+  // auto-pan — lazy LFO.
+  useEffect(() => {
+    const m = nodesRef.current?.modules?.autopan
+    if (!m) return
+    if (panActive) m.buildLfo(panRate, panWave)
+    else m.teardownLfo()
+  }, [panActive])
+  useEffect(() => {
+    const lfo = nodesRef.current?.modules?.autopan?.panLfo
+    if (lfo) lfo.frequency.value = Math.max(0.01, panRate)
+  }, [panRate])
   useEffect(() => {
     if (!nodesRef.current) return
     nodesRef.current.panDepthGain.gain.value = panActive ? panDepth : 0
   }, [panDepth, panActive])
   useEffect(() => { if (nodesRef.current) nodesRef.current.autoPan.pan.value = panCenter }, [panCenter])
   useEffect(() => {
-    if (!nodesRef.current) return
+    const lfo = nodesRef.current?.modules?.autopan?.panLfo
+    if (!lfo) return
     const w = ['sine', 'triangle', 'square', 'sawtooth'].includes(panWave) ? panWave : 'sine'
-    try { nodesRef.current.panLfo.type = w } catch {}
+    try { lfo.type = w } catch {}
   }, [panWave])
   useEffect(() => { if (nodesRef.current) nodesRef.current.tapeDelay.delayTime.value = delayTime }, [delayTime])
   useEffect(() => { if (nodesRef.current) nodesRef.current.tapeFbGain.gain.value = delayFb }, [delayFb])
