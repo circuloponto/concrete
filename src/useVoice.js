@@ -21,7 +21,7 @@ function modulatedValue(key, base, mod) {
 export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = null, audioNodes = null) {
   const reverbBus = audioNodes?.reverbBus || null
   const bandReverbBus = audioNodes?.bandReverbBus || null
-  const { getAudioCtx, getBuffer, pool } = useStore()
+  const { getAudioCtx, getBuffer, pool, lowCpuMode } = useStore()
   const [buffer, setBuffer] = useState(null)
   const [sourceName, setSourceName] = useState('')
   const [loadedPoolId, setLoadedPoolId] = useState(initial.loadedPoolId || '')
@@ -1145,10 +1145,13 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
     if (!nodes) return
     const src = reversedRef.current ? reverseBuffer(buffer, ctx) : buffer
     const dur = src.duration
-    // Use a native AudioBufferSourceNode when we don't need pitch/tempo
-    // shifting — it supports hardware loopStart/loopEnd and is free on the
-    // audio thread. The worklet stretcher spins up only when needed.
-    const needsShifter = tempo !== 1 || pitch !== 0
+    // In low-CPU mode (mobile default), skip the signalsmith-stretch WASM
+    // worklet entirely. Pitch and tempo collapse into a single playbackRate
+    // on the native AudioBufferSourceNode — not independent, but free on
+    // the audio thread. Six voices on a thermally-constrained phone can't
+    // host six independent stretchers without glitching.
+    const needsShifter = !lowCpuMode && (tempo !== 1 || pitch !== 0)
+    const lowCpuRate = tempo * Math.pow(2, pitch / 12)
     playingRef.current = true
     setPlaying(true)
     if (!needsShifter) {
@@ -1158,6 +1161,7 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
       node.loop = !oneShot
       node.loopStart = Math.max(0, Math.min(dur, ls0 * dur))
       node.loopEnd = Math.max(node.loopStart + 0.01, Math.min(dur, le0 * dur))
+      if (lowCpuMode) node.playbackRate.value = lowCpuRate
       node.connect(nodes.shifterBus)
       const t0 = ctx.currentTime
       const startOffset = node.loopStart
@@ -1308,7 +1312,11 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
     const sh = shifterRef.current
     if (!sh) return
     const onSource = sh._kind === 'source'
-    const needsShifter = tempo !== 1 || pitch !== 0
+    const needsShifter = !lowCpuMode && (tempo !== 1 || pitch !== 0)
+    // Low-CPU mode lives entirely on the native source path — tempo/pitch
+    // changes require a restart so the new playbackRate applies (there's
+    // no live equivalent on AudioBufferSourceNode after start()).
+    if (lowCpuMode && onSource) { playRef.current(); return }
     if (onSource && needsShifter) { playRef.current() }
     else if (!onSource && !needsShifter) { playRef.current() }
     else if (!onSource) {

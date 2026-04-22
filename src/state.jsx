@@ -150,11 +150,40 @@ export function StateProvider({ children }) {
   const [soundState, setSoundState] = useState(defaultSoundState)
   const [ui, setUi] = useState(defaultUi)
   const [sessionVersion, setSessionVersion] = useState(0)
+  // `workletsReady` drives a loading overlay while AudioWorklet.addModule()
+  // resolves. On low-end Android this total load can be 500ms–1.5s for
+  // the six worklets the branch ships, and the existing await-in-buffer-
+  // effect race-guard makes the UI feel dead during that window.
+  // `audioCtxInitialized` gates the overlay to only appear after the user
+  // gesture that kicks off AudioContext creation.
+  const [workletsReady, setWorkletsReady] = useState(false)
+  const [audioCtxInitialized, setAudioCtxInitialized] = useState(false)
+  // Mobile/low-CPU mode — disables the signalsmith-stretch worklet per-
+  // voice allocation (six independent WASM stretchers can melt a thermally
+  // constrained phone). When true, tempo/pitch changes fall back to the
+  // native AudioBufferSourceNode path (flat tempo=1 + playbackRate for
+  // pitch only). Auto-defaults to true on mobile UAs; user can override
+  // from the transport UI.
+  const mobileDefault = typeof navigator !== 'undefined'
+    && /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent || '')
+  const [lowCpuMode, setLowCpuMode] = useState(mobileDefault)
 
   const getAudioCtx = useCallback(() => {
     if (!audioCtxRef.current) {
-      audioCtxRef.current = new (window.AudioContext || window.webkitAudioContext)()
-      ensureWorklets(audioCtxRef.current)
+      const Ctor = window.AudioContext || window.webkitAudioContext
+      // Pin to 44.1 kHz so grain durations in worklets (which compute
+      // Math.floor(seconds * sampleRate)) stay consistent regardless of
+      // Bluetooth-headset-forced 24 kHz / 16 kHz contexts on iOS. Fall
+      // back silently if the browser rejects the preferred rate.
+      try {
+        audioCtxRef.current = new Ctor({ sampleRate: 44100 })
+      } catch {
+        audioCtxRef.current = new Ctor()
+      }
+      setAudioCtxInitialized(true)
+      ensureWorklets(audioCtxRef.current).then((r) => {
+        if (r?.loaded) setWorkletsReady(true)
+      })
       // Fire-and-forget: pre-generate common synthetic reverb IR sizes on a
       // worker so the first activation of reverb doesn't jank on low-end
       // mobile (30–80 ms for a 3s IR at 44.1 kHz otherwise).
@@ -274,6 +303,9 @@ export function StateProvider({ children }) {
     ui, setUi,
     sessionVersion,
     saveSession, loadSession,
+    workletsReady,
+    audioCtxInitialized,
+    lowCpuMode, setLowCpuMode,
   }
 
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>

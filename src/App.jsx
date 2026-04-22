@@ -14,7 +14,8 @@ const AUDIO_RX = /\.(wav|mp3|aiff?|ogg|flac|m4a|webm)$/i
 function Shell() {
   const {
     highlight, setHighlight, theme, setTheme, ui, setUi, sessionVersion,
-    addPoolItem, getAudioCtx,
+    addPoolItem, getAudioCtx, workletsReady, audioCtxInitialized,
+    lowCpuMode, setLowCpuMode,
   } = useStore()
   const tab = ui.tab
   const setTab = (t) => setUi(prev => ({ ...prev, tab: t }))
@@ -172,6 +173,14 @@ function Shell() {
             <div className="drop-icon">+</div>
             <div className="drop-text">drop audio files to import</div>
             <div className="drop-sub">wav · mp3 · aiff · ogg · flac · m4a</div>
+          </div>
+        </div>
+      )}
+      {audioCtxInitialized && !workletsReady && (
+        <div className="worklet-loading-overlay">
+          <div className="worklet-loading-inner">
+            <div className="worklet-loading-dot" />
+            <div className="worklet-loading-text">initializing audio engine…</div>
           </div>
         </div>
       )}

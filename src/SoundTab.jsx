@@ -5,7 +5,7 @@ import { VoicePlayer } from './VoicePlayer'
 import { VoiceControls } from './VoiceControls'
 
 export function SoundTab({ selectedPoolId }) {
-  const { getAudioCtx, addPoolItem, soundState, setSoundState } = useStore()
+  const { getAudioCtx, addPoolItem, soundState, setSoundState, lowCpuMode, setLowCpuMode } = useStore()
   const [audioNodes] = useState(() => {
     const ctx = getAudioCtx()
     const busInput = ctx.createGain(); busInput.gain.value = 1
@@ -259,6 +259,18 @@ export function SoundTab({ selectedPoolId }) {
           />
           <span className="value">{Math.round((soundState.bus?.feedback ?? 0) * 100)}%</span>
         </div>
+        <div style={{ width: 12 }} />
+        <label
+          title="Skip the pitch/time stretch worklet — pitch and tempo collapse into a single playback rate. Much lighter on mobile CPU."
+          style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, cursor: 'pointer' }}
+        >
+          <input
+            type="checkbox"
+            checked={lowCpuMode}
+            onChange={e => setLowCpuMode(e.target.checked)}
+          />
+          Low-CPU
+        </label>
         <div style={{ width: 12 }} />
         <span data-tutorial="rec">
           {!recording
