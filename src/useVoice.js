@@ -1581,9 +1581,12 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
     nodesRef.current.cqFilters.forEach(({ filter }) => { filter.Q.value = granCQResonance })
   }, [granCQResonance])
 
-  // Push the current buffer into the granulator worklet whenever it changes.
-  // Clone channels into fresh Float32Arrays so we can transfer ownership to
-  // the worklet without losing main-thread access to the original AudioBuffer.
+  // Push the current buffer into the granulator worklet whenever it changes
+  // OR whenever ensureEffects rebuilds (nodesReadyV bump). Without the
+  // nodesReadyV dep, on first load this useEffect fires before the async
+  // buffer-effect has finished awaiting ensureWorklets — so granNode is
+  // still null, the message is dropped, and the worklet never gets the
+  // sample data. Result: granulator silent.
   const granBufferIdRef = useRef(0)
   useEffect(() => {
     const granNode = nodesRef.current?.modules?.granulator?.granNode
@@ -1596,14 +1599,15 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
       chans.push(copy)
     }
     granNode.port.postMessage({ type: 'loadBuffer', id, channels: chans }, chans.map(c => c.buffer))
-  }, [buffer])
+  }, [buffer, nodesReadyV])
 
-  // Forward constQ routing toggle into the worklet.
+  // Forward constQ routing toggle into the worklet. Also re-send on node
+  // rebuild so a freshly-built worklet picks up the current granConstQ state.
   useEffect(() => {
     const granNode = nodesRef.current?.modules?.granulator?.granNode
     if (!granNode) return
     granNode.port.postMessage({ type: 'setConstQ', enabled: granConstQ })
-  }, [granConstQ])
+  }, [granConstQ, nodesReadyV])
 
   // LFO router — reconciles attached LFO worklet nodes against the current
   // modulator config + base values. Deps include every routed target's state
@@ -1651,7 +1655,7 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
       chans.push(copy)
     }
     freezeNode.port.postMessage({ type: 'loadBuffer', id, channels: chans }, chans.map(c => c.buffer))
-  }, [buffer])
+  }, [buffer, nodesReadyV])
 
   const onScrub = useCallback((p, delta, phase) => {
     if (!buffer) return
