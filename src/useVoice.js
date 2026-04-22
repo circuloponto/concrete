@@ -291,6 +291,20 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
         if (last.voicePitch !== vp) { params.get('voicePitch').value = vp; last.voicePitch = vp }
         if (last.active !== a) { params.get('active').value = a; last.active = a }
       }
+      // Band doppler worklet — dirty-checked k-rate param push.
+      const bdMod = nodesRef.current?.modules?.banddoppler
+      if (bdMod?.worklet) {
+        const bd = bandDopplerRef.current
+        const ll = bandDopplerLastRef.current
+        const w = bdMod.worklet.parameters
+        const ba = bd.active ? 1 : 0
+        if (ll.speed !== bd.speed) { w.get('speed').value = bd.speed; ll.speed = bd.speed }
+        if (ll.spread !== bd.spread) { w.get('spread').value = bd.spread; ll.spread = bd.spread }
+        if (ll.panWidth !== bd.panWidth) { w.get('panWidth').value = bd.panWidth; ll.panWidth = bd.panWidth }
+        if (ll.distance !== bd.distance) { w.get('distance').value = bd.distance; ll.distance = bd.distance }
+        if (ll.mix !== bd.mix) { w.get('mix').value = bd.mix; ll.mix = bd.mix }
+        if (ll.active !== ba) { w.get('active').value = ba; ll.active = ba }
+      }
       // Freeze worklet — same dirty-check pattern.
       const freezeNode = nodesRef.current?.modules?.freeze?.freezeNode
       if (freezeNode) {
@@ -313,80 +327,10 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
     return () => { if (modRafRef.current) clearInterval(modRafRef.current) }
   }, [])
 
-  // Granulator scheduler — self-rescheduling setTimeout that reads params from ref.
-  const granPosCursorRef = useRef(granPos)
-  useEffect(() => { granPosCursorRef.current = granPos }, [granPos])
-  const granTimerRef = useRef(null)
+  // bufferRef kept in sync so the granulator / freeze buffer-load useEffects
+  // can read the current AudioBuffer without waiting for a closure refresh.
   const bufferRef = useRef(buffer)
   bufferRef.current = buffer
-  const spawnGrainRef = useRef(() => {})
-  spawnGrainRef.current = () => {
-    const buf = bufferRef.current
-    const nodes = nodesRef.current
-    const p = granRef.current
-    if (!buf || !nodes || !p.active) return
-    if (!playingRef.current) return
-    // Worklet path handles spawning sample-accurately inside process().
-    if (nodes.modules?.granulator?.granNode) return
-    const ctx = getAudioCtx()
-
-    // advance cursor by drift
-    if (p.drift !== 0) {
-      granPosCursorRef.current = ((granPosCursorRef.current + p.drift * 0.01) % 1 + 1) % 1
-    } else {
-      granPosCursorRef.current = p.pos
-    }
-
-    const sprayed = granPosCursorRef.current + (Math.random() - 0.5) * 2 * p.spray
-    const normPos = ((sprayed % 1) + 1) % 1
-    const startSec = normPos * buf.duration
-    // Compose voice pitch into grain rate so the voice-level Pitch control
-    // shifts grains too (grains are spawned from the raw buffer, so this is
-    // the hook point where the voice pitch is applied).
-    const pitchSemi = p.pitch + pitchRef.current + (Math.random() - 0.5) * 2 * p.pitchSpread
-    const rate = Math.pow(2, pitchSemi / 12)
-    const grainLen = Math.max(0.005, Math.min(buf.duration - startSec - 0.001, p.size))
-    if (grainLen <= 0.005) return
-
-    const src = ctx.createBufferSource()
-    src.buffer = buf
-    src.playbackRate.value = rate
-
-    const gain = ctx.createGain()
-    const when = ctx.currentTime + 0.01
-    const actualDur = grainLen / rate
-    gain.gain.setValueAtTime(0, when)
-    gain.gain.linearRampToValueAtTime(1, when + actualDur / 2)
-    gain.gain.linearRampToValueAtTime(0, when + actualDur)
-
-    src.connect(gain)
-    if (p.constQ) gain.connect(nodes.cqIn)
-    else gain.connect(nodes.granBus)
-    try { src.start(when, startSec, grainLen) } catch {}
-    src.onended = () => {
-      try { src.disconnect() } catch {}
-      try { gain.disconnect() } catch {}
-    }
-  }
-
-  useEffect(() => {
-    let running = true
-    const schedule = (delay) => {
-      granTimerRef.current = setTimeout(() => {
-        if (!running) return
-        // Once the worklet takes over, stop scheduling JS-side spawns
-        // permanently for the life of this voice. The useEffect cleanup
-        // handles unmount; we don't need the timer waking to early-return.
-        if (nodesRef.current?.modules?.granulator?.granNode) return
-        spawnGrainRef.current()
-        const p = granRef.current
-        const interval = 1000 / Math.max(1, p.density || 20)
-        schedule(interval)
-      }, delay)
-    }
-    schedule(50)
-    return () => { running = false; if (granTimerRef.current) clearTimeout(granTimerRef.current) }
-  }, [])
 
   // Doppler rAF — animates the delay line to simulate a moving source passing by.
   // Only runs while dopplerActive is on; on deactivate we write the rest state
@@ -449,78 +393,10 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
     return () => { if (dopplerRafRef.current) cancelAnimationFrame(dopplerRafRef.current) }
   }, [dopplerActive, getAudioCtx])
 
-  // Band Doppler rAF — animates each band's delay/pan/gain independently so
-  // the N bands feel like N different objects passing by the listener.
-  // When the worklet is active, it drives the per-band params directly;
-  // the rAF just pokes k-rate worklet params with current state.
-  const bandDopplerRafRef = useRef(null)
-  useEffect(() => {
-    if (!bandDopplerActive) {
-      const mod = nodesRef.current?.modules?.banddoppler
-      if (mod?.worklet) {
-        try {
-          mod.worklet.parameters.get('active').value = 0
-          bandDopplerLastRef.current.active = 0
-        } catch {}
-      } else if (mod) {
-        try {
-          const now = getAudioCtx().currentTime
-          mod.dry.gain.setTargetAtTime(1, now, 0.05)
-          mod.wet.gain.setTargetAtTime(0, now, 0.05)
-        } catch {}
-      }
-      return
-    }
-    const TAU = Math.PI * 2
-    const tick = () => {
-      const bd = bandDopplerRef.current
-      const nodes = nodesRef.current
-      const mod = nodes?.modules?.banddoppler
-      if (mod?.worklet) {
-        const w = mod.worklet.parameters
-        const ll = bandDopplerLastRef.current
-        const a = bd.active ? 1 : 0
-        if (ll.speed !== bd.speed) { w.get('speed').value = bd.speed; ll.speed = bd.speed }
-        if (ll.spread !== bd.spread) { w.get('spread').value = bd.spread; ll.spread = bd.spread }
-        if (ll.panWidth !== bd.panWidth) { w.get('panWidth').value = bd.panWidth; ll.panWidth = bd.panWidth }
-        if (ll.distance !== bd.distance) { w.get('distance').value = bd.distance; ll.distance = bd.distance }
-        if (ll.mix !== bd.mix) { w.get('mix').value = bd.mix; ll.mix = bd.mix }
-        if (ll.active !== a) { w.get('active').value = a; ll.active = a }
-      } else if (mod) {
-        const ctx = getAudioCtx()
-        const bands = mod.bandsRef.value
-        const now = ctx.currentTime
-        if (bd.active && bd.mix > 0 && bands.length > 0) {
-          mod.dry.gain.setTargetAtTime(1 - bd.mix, now, 0.02)
-          mod.wet.gain.setTargetAtTime(bd.gain, now, 0.02)
-          const t = performance.now() / 1000
-          const minDist = 0.8
-          for (let i = 0; i < bands.length; i++) {
-            const b = bands[i]
-            const evenPhase = i / bands.length
-            const phaseOffset = evenPhase * (1 - bd.spread) + b.phase * bd.spread
-            const theta = t * bd.speed * TAU + phaseOffset * TAU
-            const x = Math.sin(theta) * 6 * bd.distance
-            const dist = Math.hypot(x, minDist)
-            const tDelay = Math.min(0.09, dist / 343)
-            const pan = Math.max(-1, Math.min(1, (x / 6) * bd.panWidth))
-            const amp = (minDist / dist) * bd.mix / Math.sqrt(bands.length)
-            try {
-              b.delay.delayTime.setTargetAtTime(tDelay, now, 0.02)
-              b.panner.pan.setTargetAtTime(pan, now, 0.02)
-              b.gain.gain.setTargetAtTime(amp, now, 0.02)
-            } catch {}
-          }
-        }
-      }
-      bandDopplerRafRef.current = requestAnimationFrame(tick)
-    }
-    bandDopplerRafRef.current = requestAnimationFrame(tick)
-    return () => { if (bandDopplerRafRef.current) cancelAnimationFrame(bandDopplerRafRef.current) }
-  }, [bandDopplerActive, getAudioCtx])
-
-  // When the worklet drives the per-band params, dry/wet stays a state-change
-  // useEffect — no need for the rAF tick to poke it every frame.
+  // Band Doppler — worklet drives per-band params directly on the audio
+  // thread. Main-thread job is just pushing k-rate param updates to the
+  // worklet (folded into the modRafRef tick below) plus state-driven dry/wet
+  // crossfade. No dedicated rAF needed.
   useEffect(() => {
     const mod = nodesRef.current?.modules?.banddoppler
     if (!mod?.worklet) return
@@ -563,66 +439,10 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
   }, [bandReverbBands, bandReverbSize, bandReverbSpread, bandReverbDecay, bandReverbActive])
 
 
-  // ---- Spectral Freeze: multi-voice grains from voice buffer, pitch + phase spread ----
-  const freezeTimerRef = useRef(null)
-  const freezeVoiceIdx = useRef(0)
-  const spawnFreezeGrainRef = useRef(() => {})
-  spawnFreezeGrainRef.current = () => {
-    const f = freezeRef.current
-    const buf = bufferRef.current
-    const nodes = nodesRef.current
-    if (!nodes || !buf || !f.active || f.mix <= 0) return
-    if (!playingRef.current) return
-    // Worklet path handles spawning sample-accurately inside process().
-    if (nodes.modules?.freeze?.freezeNode) return
-    const ctx = getAudioCtx()
-    nodes.freezeMixGain.gain.value = f.mix
-    const nv = Math.max(1, Math.round(f.voices))
-    const vi = freezeVoiceIdx.current % nv
-    freezeVoiceIdx.current = (freezeVoiceIdx.current + 1) % nv
-    const phaseOffset = f.phase * (vi / nv) * f.grain
-    const startSec = Math.max(0, Math.min(buf.duration - 0.005, f.pos * buf.duration + phaseOffset))
-    const grainDur = Math.min(f.grain, Math.max(0.005, buf.duration - startSec))
-    if (grainDur <= 0.005) return
-    const amplitude = f.gainVal / Math.sqrt(nv)
-    // Freeze grains honour voice pitch too (freezes are raw-buffer grains).
-    const rate = Math.pow(2, (f.pitch + pitchRef.current) / 12)
-    const actualDur = grainDur / rate
-    const fadeFrac = 0.25
-    const fadeTime = Math.min(actualDur * fadeFrac, actualDur / 2 - 0.001)
-    if (fadeTime <= 0) return
-    const when = ctx.currentTime + 0.005
-    const src = ctx.createBufferSource()
-    src.buffer = buf
-    src.playbackRate.value = rate
-    const env = ctx.createGain()
-    env.gain.setValueAtTime(0, when)
-    env.gain.linearRampToValueAtTime(amplitude, when + fadeTime)
-    env.gain.setValueAtTime(amplitude, when + actualDur - fadeTime)
-    env.gain.linearRampToValueAtTime(0, when + actualDur)
-    src.connect(env).connect(nodes.freezeMixGain)
-    try { src.start(when, startSec, grainDur) } catch {}
-    src.onended = () => { try { src.disconnect() } catch {}; try { env.disconnect() } catch {} }
-  }
-  useEffect(() => {
-    let running = true
-    const schedule = (delay) => {
-      freezeTimerRef.current = setTimeout(() => {
-        if (!running) return
-        // Once the worklet takes over, stop scheduling JS-side grains
-        // permanently. Useful JS path survives only for browsers that
-        // fail to load the worklet.
-        if (nodesRef.current?.modules?.freeze?.freezeNode) return
-        spawnFreezeGrainRef.current()
-        const f = freezeRef.current
-        const nv = Math.max(1, Math.round(f.voices))
-        const interval = Math.max(5, (f.grain * 1000) / 2 / nv)
-        schedule(interval)
-      }, delay)
-    }
-    schedule(50)
-    return () => { running = false; if (freezeTimerRef.current) clearTimeout(freezeTimerRef.current) }
-  }, [])
+  // Spectral freeze spawning lives entirely inside freeze.worklet.js now.
+  // The legacy setTimeout fallback was deleted — worklet support is universal,
+  // and the async ensureWorklets await guarantees freezeNode exists before
+  // any main-thread code tries to drive grain scheduling.
 
   const stop = useCallback(() => {
     if (shifterRef.current) {
@@ -1188,6 +1008,15 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
         // shared convolver would leak even after the last voice lets go.
         if (typeof m.releaseProfile === 'function') { try { m.releaseProfile() } catch {} }
       }
+      // Defensive reset for the grain-pool worklets. If an ensureEffects
+      // rebuild reuses the same worklet (it doesn't today, but future code
+      // changes might), the previous voice-pool state must not leak across
+      // rebuilds — active grains from the old buffer would keep playing.
+      // These messages are no-ops on brand-new worklets.
+      const granNode = modules.granulator?.granNode
+      if (granNode) { try { granNode.port.postMessage({ type: 'reset' }) } catch {} }
+      const freezeNode = modules.freeze?.freezeNode
+      if (freezeNode) { try { freezeNode.port.postMessage({ type: 'reset' }) } catch {} }
     }
     Object.values(rest).forEach(n => { try { n.disconnect() } catch {} })
     nodesRef.current = null
