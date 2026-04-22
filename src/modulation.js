@@ -146,11 +146,12 @@ export const MOD_SPEC = {
   },
 }
 
-export function applyModulation(state, nodes, shifter) {
+export function applyModulation(state, nodes, shifter, skipKeys) {
   if (!nodes || !state.modulators) return
   const now = performance.now() / 1000
   const mods = state.modulators
   for (const key in mods) {
+    if (skipKeys && skipKeys.has(key)) continue
     const m = mods[key]
     if (!m || !m.enabled) continue
     const spec = MOD_SPEC[key]

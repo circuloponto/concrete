@@ -4,6 +4,7 @@ import { reverseBuffer, makeReverbIR, makeSaturationCurve } from './audio'
 import { applyModulation, DEFAULT_MOD, MOD_SPEC, lfoWave } from './modulation'
 import { createStretchShim } from './audio/stretchShim'
 import { isWorkletReady, ensureWorklets } from './audio/workletHost'
+import { attachLfo, LFO_TARGETS } from './audio/lfoRouter'
 
 const VIRTUAL_MOD_KEYS = ['granPos', 'granDensity', 'granPitch', 'dopplerSpeed', 'freezePos']
 
@@ -223,6 +224,13 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
   const dopplerLastRef = useRef({})
   const bandDopplerLastRef = useRef({})
   const freezeLastRef = useRef({})
+  // LFO worklet router — attached modulators that write straight to an
+  // AudioParam on the audio thread. skipKeys is read by the setInterval
+  // tick so applyModulation does not also write those targets from JS.
+  const lfoRouterRef = useRef({ map: new Map(), skipKeys: new Set() })
+  // Bumped by ensureEffects so the router useEffect re-runs after nodes
+  // actually exist (the buffer effect awaits worklets async).
+  const [nodesReadyV, setNodesReadyV] = useState(0)
   const bandReverbRef = useRef({})
   bandReverbRef.current = {
     active: bandReverbActive, mix: bandReverbMix, gain: bandReverbGain,
@@ -247,7 +255,7 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
       let anyEnabled = false
       for (const k in mods) { if (mods[k]?.enabled) { anyEnabled = true; break } }
       if (anyEnabled) {
-        applyModulation(stateRef.current, nodesRef.current, shifterRef.current)
+        applyModulation(stateRef.current, nodesRef.current, shifterRef.current, lfoRouterRef.current.skipKeys)
         // virtual targets — non-AudioParam params that the scheduler reads from refs
         for (const key of VIRTUAL_MOD_KEYS) {
           const m = mods[key]
@@ -1099,11 +1107,19 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
       cqIn, cqOut, cqFilters, buildCQBank, teardownCQBank,
       master, oscs, modules, wireChain,
     }
+    // Signal to the LFO router useEffect that fresh nodes are available.
+    setNodesReadyV(v => v + 1)
     return nodesRef.current
   }, [getAudioCtx, outputNode])
 
   const teardownEffects = useCallback(() => {
     if (!nodesRef.current) return
+    // Detach any routed LFOs first so their disconnect() hits the still-live
+    // AudioParams; otherwise we'd leak worklet nodes on every teardown.
+    const router = lfoRouterRef.current
+    for (const [, h] of router.map) { try { h.detach(0) } catch {} }
+    router.map.clear()
+    router.skipKeys = new Set()
     const { oscs, cqFilters, modules, ...rest } = nodesRef.current
     if (oscs) oscs.forEach(o => { try { o.stop() } catch {} })
     if (cqFilters) cqFilters.forEach(({ filter, gain }) => {
@@ -1520,6 +1536,37 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
     if (!granNode) return
     granNode.port.postMessage({ type: 'setConstQ', enabled: granConstQ })
   }, [granConstQ])
+
+  // LFO router — reconciles attached LFO worklet nodes against the current
+  // modulator config + base values. Deps include every routed target's state
+  // value, so dragging a slider updates the AudioParam base (onto which the
+  // worklet's output sums). Runs after ensureEffects via [nodesReadyV].
+  useEffect(() => {
+    const nodes = nodesRef.current
+    if (!nodes) return
+    const ctx = getAudioCtx()
+    const router = lfoRouterRef.current
+    const mods = modulators || {}
+    const nextSkip = new Set()
+    const bases = {
+      filterHz, filterQ, reverbWet, wet, panCenter, voiceGain, delayTime, delayFb,
+    }
+    for (const key of Object.keys(LFO_TARGETS)) {
+      const config = mods[key]
+      const target = LFO_TARGETS[key](nodes)
+      const spec = MOD_SPEC[key]
+      const base = bases[key]
+      const existing = router.map.get(key)
+      if (!config?.enabled || !target || !spec || typeof base !== 'number') {
+        if (existing) { try { existing.detach(typeof base === 'number' ? base : 0) } catch {}; router.map.delete(key) }
+        continue
+      }
+      nextSkip.add(key)
+      if (existing) existing.update(config, base)
+      else router.map.set(key, attachLfo(ctx, target, base, config, spec))
+    }
+    router.skipKeys = nextSkip
+  }, [modulators, filterHz, filterQ, reverbWet, wet, panCenter, voiceGain, delayTime, delayFb, nodesReadyV, getAudioCtx])
 
   // Push the current buffer into the freeze worklet whenever it changes.
   // Independent clone from the granulator's copy — transferable ownership
