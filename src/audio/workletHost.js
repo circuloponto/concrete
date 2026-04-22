@@ -6,6 +6,7 @@ import granulatorUrl from './worklets/granulator.worklet.js?url'
 import dopplerUrl from './worklets/doppler.worklet.js?url'
 import bandDopplerUrl from './worklets/bandDoppler.worklet.js?url'
 import lfoUrl from './worklets/lfo.worklet.js?url'
+import freezeUrl from './worklets/freeze.worklet.js?url'
 
 const WORKLET_URLS = {
   noop: noopUrl,
@@ -13,6 +14,7 @@ const WORKLET_URLS = {
   doppler: dopplerUrl,
   bandDoppler: bandDopplerUrl,
   lfo: lfoUrl,
+  freeze: freezeUrl,
 }
 
 const readyByContext = new WeakMap()

@@ -222,6 +222,7 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
   const granLastRef = useRef({})
   const dopplerLastRef = useRef({})
   const bandDopplerLastRef = useRef({})
+  const freezeLastRef = useRef({})
   const bandReverbRef = useRef({})
   bandReverbRef.current = {
     active: bandReverbActive, mix: bandReverbMix, gain: bandReverbGain,
@@ -283,6 +284,23 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
         if (last.pitch !== p.pitch) { params.get('pitch').value = p.pitch; last.pitch = p.pitch }
         if (last.pitchSpread !== p.pitchSpread) { params.get('pitchSpread').value = p.pitchSpread; last.pitchSpread = p.pitchSpread }
         if (last.voicePitch !== vp) { params.get('voicePitch').value = vp; last.voicePitch = vp }
+        if (last.active !== a) { params.get('active').value = a; last.active = a }
+      }
+      // Freeze worklet — same dirty-check pattern.
+      const freezeNode = nodesRef.current?.modules?.freeze?.freezeNode
+      if (freezeNode) {
+        const f = freezeRef.current
+        const last = freezeLastRef.current
+        const params = freezeNode.parameters
+        const vp = pitchRef.current
+        const a = f.active && f.mix > 0 ? 1 : 0
+        if (last.pos !== f.pos) { params.get('pos').value = f.pos; last.pos = f.pos }
+        if (last.grain !== f.grain) { params.get('grain').value = f.grain; last.grain = f.grain }
+        if (last.gainVal !== f.gainVal) { params.get('gain').value = f.gainVal; last.gainVal = f.gainVal }
+        if (last.pitch !== f.pitch) { params.get('pitch').value = f.pitch; last.pitch = f.pitch }
+        if (last.voicePitch !== vp) { params.get('voicePitch').value = vp; last.voicePitch = vp }
+        if (last.voices !== f.voices) { params.get('voices').value = f.voices; last.voices = f.voices }
+        if (last.phase !== f.phase) { params.get('phase').value = f.phase; last.phase = f.phase }
         if (last.active !== a) { params.get('active').value = a; last.active = a }
       }
       modRafRef.current = requestAnimationFrame(tick)
@@ -530,6 +548,8 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
     const nodes = nodesRef.current
     if (!nodes || !buf || !f.active || f.mix <= 0) return
     if (!playingRef.current) return
+    // Worklet path handles spawning sample-accurately inside process().
+    if (nodes.modules?.freeze?.freezeNode) return
     const ctx = getAudioCtx()
     nodes.freezeMixGain.gain.value = f.mix
     const nv = Math.max(1, Math.round(f.voices))
@@ -564,6 +584,10 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
     const schedule = (delay) => {
       freezeTimerRef.current = setTimeout(() => {
         if (!running) return
+        // Once the worklet takes over, stop scheduling JS-side grains
+        // permanently. Useful JS path survives only for browsers that
+        // fail to load the worklet.
+        if (nodesRef.current?.modules?.freeze?.freezeNode) return
         spawnFreezeGrainRef.current()
         const f = freezeRef.current
         const nv = Math.max(1, Math.round(f.voices))
@@ -810,7 +834,21 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
       const freezeMixGain = G(freezeActive ? freezeMix : 0)
       input.connect(freezeDry).connect(output)
       freezeMixGain.connect(output)
-      modules.freeze = { input, output, freezeDry, freezeMixGain } }
+      let freezeNode = null
+      if (isWorkletReady(ctx)) {
+        try {
+          freezeNode = new AudioWorkletNode(ctx, 'freeze', {
+            numberOfInputs: 0,
+            numberOfOutputs: 1,
+            outputChannelCount: [2],
+          })
+          freezeNode.connect(freezeMixGain)
+        } catch (e) {
+          console.error('[useVoice] freeze worklet construction failed', e)
+          freezeNode = null
+        }
+      }
+      modules.freeze = { input, output, freezeDry, freezeMixGain, freezeNode } }
 
     // Doppler
     { const input = G(), output = G()
@@ -1454,6 +1492,23 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
     if (!granNode) return
     granNode.port.postMessage({ type: 'setConstQ', enabled: granConstQ })
   }, [granConstQ])
+
+  // Push the current buffer into the freeze worklet whenever it changes.
+  // Independent clone from the granulator's copy — transferable ownership
+  // moves the ArrayBuffer over, so each worklet needs its own Float32Arrays.
+  const freezeBufferIdRef = useRef(0)
+  useEffect(() => {
+    const freezeNode = nodesRef.current?.modules?.freeze?.freezeNode
+    if (!freezeNode || !buffer) return
+    const id = ++freezeBufferIdRef.current
+    const chans = []
+    for (let c = 0; c < buffer.numberOfChannels; c++) {
+      const copy = new Float32Array(buffer.length)
+      copy.set(buffer.getChannelData(c))
+      chans.push(copy)
+    }
+    freezeNode.port.postMessage({ type: 'loadBuffer', id, channels: chans }, chans.map(c => c.buffer))
+  }, [buffer])
 
   const onScrub = useCallback((p, delta, phase) => {
     if (!buffer) return
