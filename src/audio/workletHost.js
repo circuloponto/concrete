@@ -7,6 +7,7 @@ import dopplerUrl from './worklets/doppler.worklet.js?url'
 import bandDopplerUrl from './worklets/bandDoppler.worklet.js?url'
 import lfoUrl from './worklets/lfo.worklet.js?url'
 import freezeUrl from './worklets/freeze.worklet.js?url'
+import stutterUrl from './worklets/stutter.worklet.js?url'
 
 const WORKLET_URLS = {
   noop: noopUrl,
@@ -15,6 +16,7 @@ const WORKLET_URLS = {
   bandDoppler: bandDopplerUrl,
   lfo: lfoUrl,
   freeze: freezeUrl,
+  stutter: stutterUrl,
 }
 
 const readyByContext = new WeakMap()

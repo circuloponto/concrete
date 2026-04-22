@@ -131,6 +131,14 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
   const [freezeVoices, setFreezeVoices] = useState(initial.freezeVoices ?? 4)
   const [freezePhase, setFreezePhase] = useState(initial.freezePhase ?? 0.5)
 
+  // stutter
+  const [stutterActive, setStutterActive] = useState(initial.stutterActive ?? false)
+  const [stutterSlice, setStutterSlice] = useState(initial.stutterSlice ?? 0.1)
+  const [stutterRepeats, setStutterRepeats] = useState(initial.stutterRepeats ?? 6)
+  const [stutterCurve, setStutterCurve] = useState(initial.stutterCurve ?? 0)
+  const [stutterRandom, setStutterRandom] = useState(initial.stutterRandom ?? false)
+  const [stutterMix, setStutterMix] = useState(initial.stutterMix ?? 1)
+
   // effect chain order
   const [effectOrder, setEffectOrder] = useState(() => {
     const defaults = [
@@ -153,6 +161,10 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
     if (!arr.includes('bandreverb')) {
       const idx = arr.indexOf('banddoppler')
       arr.splice(idx >= 0 ? idx + 1 : arr.length, 0, 'bandreverb')
+    }
+    if (!arr.includes('stutter')) {
+      const idx = arr.indexOf('bandreverb')
+      arr.splice(idx >= 0 ? idx + 1 : arr.length, 0, 'stutter')
     }
     // strip clatter if present from older sessions (feature removed)
     arr = arr.filter(x => x !== 'clatter')
@@ -992,6 +1004,28 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
       modules.bandreverb = mod
     }
 
+    // Stutter / beat-repeat with curve-shaped intervals. Ring-buffer
+    // capture + burst playback lives in stutter.worklet.js; the module
+    // is a simple input→worklet→output with a dry passthrough fallback.
+    { const input = G(), output = G()
+      let stutterNode = null
+      if (isWorkletReady(ctx)) {
+        try {
+          stutterNode = new AudioWorkletNode(ctx, 'stutter', {
+            numberOfInputs: 1,
+            numberOfOutputs: 1,
+            outputChannelCount: [2],
+          })
+          input.connect(stutterNode).connect(output)
+        } catch (e) {
+          console.error('[useVoice] stutter worklet construction failed', e)
+          stutterNode = null
+        }
+      }
+      if (!stutterNode) input.connect(output)  // passthrough fallback
+      modules.stutter = { input, output, stutterNode }
+    }
+
     // Auto Pan — lazy LFO; StereoPanner stays in the graph.
     { const input = G(), output = G()
       const autoPan = ctx.createStereoPanner(); autoPan.pan.value = panCenter
@@ -1277,6 +1311,7 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
       bandReverbActive, bandReverbBands, bandReverbSize, bandReverbSpread,
       bandReverbDecay, bandReverbGain, bandReverbMix,
       freezeActive, freezePos, freezeGrain, freezeMix, freezeGainVal, freezePitch, freezeVoices, freezePhase,
+      stutterActive, stutterSlice, stutterRepeats, stutterCurve, stutterRandom, stutterMix,
       effectOrder,
       modulators,
     })
@@ -1299,6 +1334,7 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
     bandReverbActive, bandReverbBands, bandReverbSize, bandReverbSpread,
     bandReverbDecay, bandReverbGain, bandReverbMix,
     freezeActive, freezePos, freezeGrain, freezeMix, freezeGainVal, freezePitch, freezeVoices, freezePhase,
+    stutterActive, stutterSlice, stutterRepeats, stutterCurve, stutterRandom, stutterMix,
     effectOrder,
     modulators,
   ])
@@ -1475,6 +1511,22 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
     nodesRef.current.freezeMixGain.gain.value = freezeActive ? freezeMix : 0
     if (nodesRef.current.freezeDry) nodesRef.current.freezeDry.gain.value = freezeActive ? (1 - freezeMix) : 1
   }, [freezeMix, freezeActive])
+
+  // Stutter: push all params straight to the worklet on any state change.
+  // All stutter params are k-rate AudioParams so this is a handful of cheap
+  // .value writes — no need for the mod-tick dirty-check scratchpad since
+  // stutter params rarely change mid-playback.
+  useEffect(() => {
+    const node = nodesRef.current?.modules?.stutter?.stutterNode
+    if (!node) return
+    const p = node.parameters
+    p.get('active').value = stutterActive ? 1 : 0
+    p.get('slice').value = stutterSlice
+    p.get('repeats').value = stutterRepeats
+    p.get('curve').value = stutterCurve
+    p.get('randomize').value = stutterRandom ? 1 : 0
+    p.get('mix').value = stutterMix
+  }, [stutterActive, stutterSlice, stutterRepeats, stutterCurve, stutterRandom, stutterMix, nodesReadyV])
   useEffect(() => {
     const n = nodesRef.current
     if (!n) return
@@ -1680,6 +1732,9 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
     setFreezeActive(d.freezeActive); setFreezePos(d.freezePos); setFreezeGrain(d.freezeGrain)
     setFreezeMix(d.freezeMix); setFreezeGainVal(d.freezeGainVal); setFreezePitch(d.freezePitch)
     setFreezeVoices(d.freezeVoices); setFreezePhase(d.freezePhase)
+    setStutterActive(d.stutterActive); setStutterSlice(d.stutterSlice)
+    setStutterRepeats(d.stutterRepeats); setStutterCurve(d.stutterCurve)
+    setStutterRandom(d.stutterRandom); setStutterMix(d.stutterMix)
     setModulators({})
   }, [])
 
@@ -1841,6 +1896,13 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
     freezePitch, setFreezePitch,
     freezeVoices, setFreezeVoices,
     freezePhase, setFreezePhase,
+    // stutter
+    stutterActive, setStutterActive,
+    stutterSlice, setStutterSlice,
+    stutterRepeats, setStutterRepeats,
+    stutterCurve, setStutterCurve,
+    stutterRandom, setStutterRandom,
+    stutterMix, setStutterMix,
     // chain order
     effectOrder, setEffectOrder,
     // modulation

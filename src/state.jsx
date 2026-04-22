@@ -115,8 +115,15 @@ export const defaultVoice = () => ({
   freezePitch: 0,
   freezeVoices: 4,
   freezePhase: 0.5,
+  // stutter / beat-repeat with curve-shaped intervals
+  stutterActive: false,
+  stutterSlice: 0.1,
+  stutterRepeats: 6,
+  stutterCurve: 0,
+  stutterRandom: false,
+  stutterMix: 1,
   // effect chain order (all modules are serial, each with internal wet/dry)
-  effectOrder: ['saturation', 'wow', 'filter', 'ringmod', 'tremolo', 'flanger', 'delay', 'reverb', 'granulator', 'freeze', 'doppler', 'banddoppler', 'bandreverb', 'autopan'],
+  effectOrder: ['saturation', 'wow', 'filter', 'ringmod', 'tremolo', 'flanger', 'delay', 'reverb', 'granulator', 'freeze', 'doppler', 'banddoppler', 'bandreverb', 'stutter', 'autopan'],
   // modulation
   modulators: {},
 })

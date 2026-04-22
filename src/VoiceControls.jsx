@@ -77,7 +77,7 @@ function FreezeXY({ voice }) {
 const EFFECT_LABELS = {
   saturation: 'Saturation', wow: 'Wow/Flutter', filter: 'Filter', ringmod: 'Ring Mod', tremolo: 'Tremolo',
   flanger: 'Flanger', delay: 'Tape Delay', reverb: 'Reverb', granulator: 'Granulator', freeze: 'Freeze',
-  doppler: 'Doppler', banddoppler: 'Band Doppler', bandreverb: 'Band Reverb',
+  doppler: 'Doppler', banddoppler: 'Band Doppler', bandreverb: 'Band Reverb', stutter: 'Stutter',
   autopan: 'Auto Pan',
 }
 
@@ -94,6 +94,7 @@ const EFFECT_ACTIVE_KEYS = {
   doppler: ['dopplerActive', 'setDopplerActive'],
   banddoppler: ['bandDopplerActive', 'setBandDopplerActive'],
   bandreverb: ['bandReverbActive', 'setBandReverbActive'],
+  stutter: ['stutterActive', 'setStutterActive'],
   autopan: ['panActive', 'setPanActive'],
   granulator: ['granActive', 'setGranActive'],
 }
@@ -114,6 +115,7 @@ const EFFECT_MIX_SETTER = {
   doppler: 'setDopplerMix',
   banddoppler: 'setBandDopplerMix',
   bandreverb: 'setBandReverbMix',
+  stutter: 'setStutterMix',
 }
 
 // Maps each chain-order effect to the sub-tab that contains its controls.
@@ -125,6 +127,7 @@ const EFFECT_SUBTAB = {
   granulator: 'grain',
   freeze: 'freeze',
   doppler: 'motion', banddoppler: 'motion', bandreverb: 'motion',
+  stutter: 'freeze',
 }
 
 function ChainModal({ voice, onClose, onPickEffect }) {
@@ -695,6 +698,37 @@ export function VoiceControls({ voice }) {
             <Row label="Phase" value={fmtPct(v.freezePhase)}>
               <Slider min={0} max={1} step={0.01} value={v.freezePhase} onChange={v.setFreezePhase} />
             </Row>
+          </div>
+          <div className="panel">
+            <h4>Stutter
+              <button
+                className={'tiny-toggle' + (v.stutterActive ? ' active' : '')}
+                onClick={() => v.setStutterActive(!v.stutterActive)}
+              >{v.stutterActive ? 'ON' : 'OFF'}</button>
+            </h4>
+            <Row
+              label="Slice"
+              value={v.stutterSlice >= 1 ? v.stutterSlice.toFixed(2) : Math.round(v.stutterSlice * 1000)}
+              unit={v.stutterSlice >= 1 ? 's' : 'ms'}
+            >
+              <Slider min={0.02} max={0.5} step={0.005} value={v.stutterSlice} onChange={v.setStutterSlice} />
+            </Row>
+            <Row label="Repeats" value={v.stutterRepeats}>
+              <Slider min={2} max={32} step={1} value={v.stutterRepeats} onChange={v.setStutterRepeats} />
+            </Row>
+            <Row label="Curve" value={v.stutterCurve === 0 ? 'flat' : (v.stutterCurve > 0 ? `accel ${v.stutterCurve.toFixed(2)}` : `decel ${Math.abs(v.stutterCurve).toFixed(2)}`)}>
+              <Slider min={-1} max={1} step={0.01} value={v.stutterCurve} onChange={v.setStutterCurve} />
+            </Row>
+            <Row label="Mix" value={fmtPct(v.stutterMix)}>
+              <Slider min={0} max={1} step={0.01} value={v.stutterMix} onChange={v.setStutterMix} />
+            </Row>
+            <Row label="Random" value={v.stutterRandom ? 'on' : 'off'}>
+              <button
+                className={'tiny-toggle' + (v.stutterRandom ? ' active' : '')}
+                onClick={() => v.setStutterRandom(!v.stutterRandom)}
+              >{v.stutterRandom ? 'RANDOMIZE' : 'FIXED'}</button>
+            </Row>
+            <div className="hint">each burst re-rolls repeats + curve when random is on · slice stays fixed</div>
           </div>
         </>}
 
