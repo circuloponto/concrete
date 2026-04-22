@@ -3,7 +3,7 @@ import { useStore, defaultVoice } from './state'
 import { reverseBuffer, makeReverbIR, makeSaturationCurve } from './audio'
 import { applyModulation, DEFAULT_MOD, MOD_SPEC, lfoWave } from './modulation'
 import { createStretchShim } from './audio/stretchShim'
-import { isWorkletReady } from './audio/workletHost'
+import { isWorkletReady, ensureWorklets } from './audio/workletHost'
 
 const VIRTUAL_MOD_KEYS = ['granPos', 'granDensity', 'granPitch', 'dopplerSpeed', 'freezePos']
 
@@ -216,6 +216,12 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
     spread: bandDopplerSpread, panWidth: bandDopplerPanWidth,
     distance: bandDopplerDistance, gain: bandDopplerGain, mix: bandDopplerMix,
   }
+  // Dirty-check scratchpads for cross-thread AudioParam writes. We only send
+  // a new value to an AudioWorkletNode param when the JS-side value actually
+  // changes, since each .value write is a main→audio post.
+  const granLastRef = useRef({})
+  const dopplerLastRef = useRef({})
+  const bandDopplerLastRef = useRef({})
   const bandReverbRef = useRef({})
   bandReverbRef.current = {
     active: bandReverbActive, mix: bandReverbMix, gain: bandReverbGain,
@@ -258,22 +264,26 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
           }
         }
       }
-      // Push granulator state to the worklet's AudioParams every frame. Cheap
-      // property writes; the worklet consumes k-rate values on block boundaries.
+      // Push granulator state to the worklet's AudioParams only when it
+      // actually changes. An AudioParam .value write crosses the main→audio
+      // thread boundary; doing it unconditionally at 60 Hz × 10 params × 6
+      // voices is >3k cross-thread writes per second for no reason.
       const granNode = nodesRef.current?.modules?.granulator?.granNode
       if (granNode) {
         const p = granRef.current
+        const last = granLastRef.current
         const params = granNode.parameters
-        params.get('density').value = p.density
-        params.get('size').value = p.size
-        params.get('pos').value = p.pos
-        params.get('drift').value = p.drift
-        params.get('spray').value = p.spray
-        params.get('pitch').value = p.pitch
-        params.get('pitchSpread').value = p.pitchSpread
-        params.get('voicePitch').value = pitchRef.current
-        // gain stays at worklet default 1.0 — module-level granMix handles gain
-        params.get('active').value = p.active ? 1 : 0
+        const vp = pitchRef.current
+        const a = p.active ? 1 : 0
+        if (last.density !== p.density) { params.get('density').value = p.density; last.density = p.density }
+        if (last.size !== p.size) { params.get('size').value = p.size; last.size = p.size }
+        if (last.pos !== p.pos) { params.get('pos').value = p.pos; last.pos = p.pos }
+        if (last.drift !== p.drift) { params.get('drift').value = p.drift; last.drift = p.drift }
+        if (last.spray !== p.spray) { params.get('spray').value = p.spray; last.spray = p.spray }
+        if (last.pitch !== p.pitch) { params.get('pitch').value = p.pitch; last.pitch = p.pitch }
+        if (last.pitchSpread !== p.pitchSpread) { params.get('pitchSpread').value = p.pitchSpread; last.pitchSpread = p.pitchSpread }
+        if (last.voicePitch !== vp) { params.get('voicePitch').value = vp; last.voicePitch = vp }
+        if (last.active !== a) { params.get('active').value = a; last.active = a }
       }
       modRafRef.current = requestAnimationFrame(tick)
     }
@@ -342,6 +352,10 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
     const schedule = (delay) => {
       granTimerRef.current = setTimeout(() => {
         if (!running) return
+        // Once the worklet takes over, stop scheduling JS-side spawns
+        // permanently for the life of this voice. The useEffect cleanup
+        // handles unmount; we don't need the timer waking to early-return.
+        if (nodesRef.current?.modules?.granulator?.granNode) return
         spawnGrainRef.current()
         const p = granRef.current
         const interval = 1000 / Math.max(1, p.density || 20)
@@ -368,11 +382,13 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
       // AudioParams and skip the JS-side setTargetAtTime calls.
       if (mod?.dopplerWorklet) {
         const w = mod.dopplerWorklet.parameters
-        w.get('speed').value = d.speed
-        w.get('range').value = d.range
-        w.get('minDist').value = d.minDist
-        w.get('mix').value = d.mix
-        w.get('active').value = d.active ? 1 : 0
+        const last = dopplerLastRef.current
+        const a = d.active ? 1 : 0
+        if (last.speed !== d.speed) { w.get('speed').value = d.speed; last.speed = d.speed }
+        if (last.range !== d.range) { w.get('range').value = d.range; last.range = d.range }
+        if (last.minDist !== d.minDist) { w.get('minDist').value = d.minDist; last.minDist = d.minDist }
+        if (last.mix !== d.mix) { w.get('mix').value = d.mix; last.mix = d.mix }
+        if (last.active !== a) { w.get('active').value = a; last.active = a }
       } else if (nodes) {
         if (d.active && d.mix > 0) {
           dopplerTRef.current += dt * d.speed
@@ -414,12 +430,14 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
       const mod = nodes?.modules?.banddoppler
       if (mod?.worklet) {
         const w = mod.worklet.parameters
-        w.get('speed').value = bd.speed
-        w.get('spread').value = bd.spread
-        w.get('panWidth').value = bd.panWidth
-        w.get('distance').value = bd.distance
-        w.get('mix').value = bd.mix
-        w.get('active').value = bd.active ? 1 : 0
+        const last = bandDopplerLastRef.current
+        const a = bd.active ? 1 : 0
+        if (last.speed !== bd.speed) { w.get('speed').value = bd.speed; last.speed = bd.speed }
+        if (last.spread !== bd.spread) { w.get('spread').value = bd.spread; last.spread = bd.spread }
+        if (last.panWidth !== bd.panWidth) { w.get('panWidth').value = bd.panWidth; last.panWidth = bd.panWidth }
+        if (last.distance !== bd.distance) { w.get('distance').value = bd.distance; last.distance = bd.distance }
+        if (last.mix !== bd.mix) { w.get('mix').value = bd.mix; last.mix = bd.mix }
+        if (last.active !== a) { w.get('active').value = a; last.active = a }
       } else if (mod) {
         const ctx = getAudioCtx()
         const bands = mod.bandsRef.value
@@ -969,11 +987,26 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
   }, [])
 
   useEffect(() => {
-    stop()
-    teardownEffects()
-    if (buffer) ensureEffects()
-    return () => { stop(); teardownEffects() }
-  }, [buffer, ensureEffects, stop, teardownEffects])
+    let cancelled = false
+    const setup = async () => {
+      stop()
+      teardownEffects()
+      if (!buffer) return
+      // Wait for addModule to resolve so isWorkletReady(ctx) returns true
+      // before the first ensureEffects() call. On mobile this can take a
+      // couple hundred ms; without the await, voices silently fall back to
+      // the old main-thread paths for their entire lifetime because
+      // nodesRef.current gets cached on the first (pre-ready) call.
+      await ensureWorklets(getAudioCtx())
+      if (cancelled) return
+      // Teardown again — if anything (scrub, play) built stale non-worklet
+      // effects during the await, this forces a fresh worklet-backed build.
+      teardownEffects()
+      ensureEffects()
+    }
+    setup()
+    return () => { cancelled = true; stop(); teardownEffects() }
+  }, [buffer, ensureEffects, stop, teardownEffects, getAudioCtx])
 
   // rewire chain when effect order changes
   useEffect(() => {
