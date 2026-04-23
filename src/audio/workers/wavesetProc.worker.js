@@ -19,9 +19,15 @@ const SILENCE_EPS = 1e-6
 // Utilities
 
 function mono(channels) {
-  if (channels.length === 1) return channels[0]
+  // Always returns a fresh buffer. Critical: the detection path runs
+  // lowpassInPlace on this result, so returning channels[0] by reference
+  // on mono sources would trash the original sample data.
   const n = channels[0].length
   const out = new Float32Array(n)
+  if (channels.length === 1) {
+    out.set(channels[0])
+    return out
+  }
   const gain = 1 / channels.length
   for (let c = 0; c < channels.length; c++) {
     const ch = channels[c]

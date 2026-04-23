@@ -155,7 +155,10 @@ export function WavesetPanel() {
   const [status, setStatus] = useState('')
   const dragIndexRef = useRef(null)
 
-  const sources = pool.filter(p => p.kind === 'sound' || p.kind === 'object' || p.kind === 'imported')
+  // Any pool item with audio is a valid source. Earlier filter excluded
+  // 'capture' / 'diffusion' / 'timeline' which left the dropdown empty
+  // for users whose pool came from in-app recording.
+  const sources = pool
 
   // Auto-pick first source if none chosen.
   const resolvedSourceId = sourceId || sources[0]?.id || ''
@@ -202,6 +205,7 @@ export function WavesetPanel() {
       addPoolItem(name, outBuf, 'sound')
       setStatus(`processed → ${name} added`)
     } catch (e) {
+      console.error('[WavesetPanel] process failed', e)
       setStatus(`error: ${e.message || e}`)
     } finally {
       setProcessing(false)
