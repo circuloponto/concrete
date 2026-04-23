@@ -169,6 +169,8 @@ export function ObjectTab() {
         />
       </div>
 
+      <WavesetPanel />
+
       <SourcePicker onSend={onSend} tracks={tracks} />
 
       <div style={{ position: 'relative', overflow: 'auto', marginTop: 12 }}>
@@ -186,8 +188,6 @@ export function ObjectTab() {
       </div>
 
       <ClipInspector clip={selectedClip} onChange={updateSelectedClip} />
-
-      <WavesetPanel />
     </div>
   )
 }
