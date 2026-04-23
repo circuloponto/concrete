@@ -1426,3 +1426,96 @@ input[type="color"] { padding: 0; width: 28px; height: 22px; border: 1px solid v
   0%, 100% { opacity: 0.3; transform: scale(0.85); }
   50% { opacity: 1; transform: scale(1.1); }
 }
+
+/* ─── Waveset Panel ───────────────────────────────────────── */
+.waveset-panel { margin-top: 16px; }
+.waveset-panel .panel h4 { margin-bottom: 10px; }
+.wv-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 6px 0;
+  font-size: 12px;
+}
+.wv-row > label {
+  min-width: 90px;
+  color: var(--dim);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+}
+.wv-row > select,
+.wv-row > input[type="range"] {
+  flex: 1;
+}
+.wv-pipeline {
+  margin: 10px 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.wv-empty {
+  color: var(--dim);
+  font-size: 11px;
+  padding: 10px;
+  text-align: center;
+  border: 1px dashed var(--border);
+  border-radius: 6px;
+}
+.wv-step {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  background: var(--track-bg);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  font-size: 12px;
+  cursor: grab;
+}
+.wv-step:active { cursor: grabbing; }
+.wv-step-idx {
+  color: var(--dim);
+  font-size: 10px;
+  min-width: 18px;
+}
+.wv-step-op {
+  color: var(--hl);
+  min-width: 140px;
+  font-weight: 500;
+}
+.wv-step-params {
+  flex: 1;
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+.wv-step-remove {
+  background: transparent;
+  border: none;
+  color: var(--dim);
+  font-size: 16px;
+  cursor: pointer;
+  padding: 0 6px;
+}
+.wv-step-remove:hover { color: #f66; }
+.wv-param {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 10px;
+  color: var(--dim);
+  text-transform: uppercase;
+  letter-spacing: 1px;
+}
+.wv-param input[type="range"] { width: 100px; }
+.wv-param > span {
+  min-width: 32px;
+  text-align: right;
+  color: var(--fg);
+  font-variant-numeric: tabular-nums;
+}
+.wv-param-row {
+  display: flex;
+  gap: 4px;
+}

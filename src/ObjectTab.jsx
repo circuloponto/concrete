@@ -3,6 +3,7 @@ import { useStore, makeTrack } from './state'
 import { Multitrack } from './Multitrack'
 import { SourcePicker } from './SourcePicker'
 import { ClipInspector } from './ClipInspector'
+import { WavesetPanel } from './WavesetPanel'
 import { renderArrangement, computeArrangementDuration, clipPlayLen } from './audio'
 
 export function ObjectTab() {
@@ -185,6 +186,8 @@ export function ObjectTab() {
       </div>
 
       <ClipInspector clip={selectedClip} onChange={updateSelectedClip} />
+
+      <WavesetPanel />
     </div>
   )
 }
