@@ -139,6 +139,13 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
   const [stutterRepeats, setStutterRepeats] = useState(initial.stutterRepeats ?? 8)
   const [stutterAutoRate, setStutterAutoRate] = useState(initial.stutterAutoRate ?? 1.5)
   const [stutterMix, setStutterMix] = useState(initial.stutterMix ?? 1)
+  const [stutterPitchActive, setStutterPitchActive] = useState(initial.stutterPitchActive ?? false)
+  const [stutterStartPitch, setStutterStartPitch] = useState(initial.stutterStartPitch ?? 0)
+  const [stutterEndPitch, setStutterEndPitch] = useState(initial.stutterEndPitch ?? 0)
+  const [stutterAmpShape, setStutterAmpShape] = useState(initial.stutterAmpShape ?? 0)
+  const [stutterJitter, setStutterJitter] = useState(initial.stutterJitter ?? 0)
+  const [stutterCurveShape, setStutterCurveShape] = useState(initial.stutterCurveShape ?? 'geometric')
+  const [stutterShapeRandom, setStutterShapeRandom] = useState(initial.stutterShapeRandom ?? false)
   const triggerStutter = useCallback(() => {
     const node = nodesRef.current?.modules?.stutter?.stutterNode
     if (node) node.port.postMessage({ type: 'trigger' })
@@ -1317,6 +1324,7 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
       bandReverbDecay, bandReverbGain, bandReverbMix,
       freezeActive, freezePos, freezeGrain, freezeMix, freezeGainVal, freezePitch, freezeVoices, freezePhase,
       stutterActive, stutterMode, stutterStartCycle, stutterEndCycle, stutterRepeats, stutterAutoRate, stutterMix,
+      stutterPitchActive, stutterStartPitch, stutterEndPitch, stutterAmpShape, stutterJitter, stutterCurveShape, stutterShapeRandom,
       effectOrder,
       modulators,
     })
@@ -1340,6 +1348,7 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
     bandReverbDecay, bandReverbGain, bandReverbMix,
     freezeActive, freezePos, freezeGrain, freezeMix, freezeGainVal, freezePitch, freezeVoices, freezePhase,
     stutterActive, stutterMode, stutterStartCycle, stutterEndCycle, stutterRepeats, stutterAutoRate, stutterMix,
+    stutterPitchActive, stutterStartPitch, stutterEndPitch, stutterAmpShape, stutterJitter, stutterCurveShape, stutterShapeRandom,
     effectOrder,
     modulators,
   ])
@@ -1525,6 +1534,7 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
     const node = nodesRef.current?.modules?.stutter?.stutterNode
     if (!node) return
     const p = node.parameters
+    const SHAPE_CODES = { linear: 0, geometric: 1, exponential: 2, scurve: 3 }
     p.get('active').value = stutterActive ? 1 : 0
     p.get('mode').value = stutterMode === 'manual' ? 1 : 0
     p.get('startCycle').value = stutterStartCycle
@@ -1532,7 +1542,20 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
     p.get('repeats').value = stutterRepeats
     p.get('autoRate').value = stutterAutoRate
     p.get('mix').value = stutterMix
-  }, [stutterActive, stutterMode, stutterStartCycle, stutterEndCycle, stutterRepeats, stutterAutoRate, stutterMix, nodesReadyV])
+    p.get('pitchActive').value = stutterPitchActive ? 1 : 0
+    p.get('startPitch').value = stutterStartPitch
+    p.get('endPitch').value = stutterEndPitch
+    p.get('ampShape').value = stutterAmpShape
+    p.get('jitter').value = stutterJitter
+    p.get('curveShape').value = SHAPE_CODES[stutterCurveShape] ?? 1
+    p.get('randomShape').value = stutterShapeRandom ? 1 : 0
+  }, [
+    stutterActive, stutterMode, stutterStartCycle, stutterEndCycle,
+    stutterRepeats, stutterAutoRate, stutterMix,
+    stutterPitchActive, stutterStartPitch, stutterEndPitch,
+    stutterAmpShape, stutterJitter, stutterCurveShape, stutterShapeRandom,
+    nodesReadyV,
+  ])
   useEffect(() => {
     const n = nodesRef.current
     if (!n) return
@@ -1742,6 +1765,10 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
     setStutterStartCycle(d.stutterStartCycle); setStutterEndCycle(d.stutterEndCycle)
     setStutterRepeats(d.stutterRepeats); setStutterAutoRate(d.stutterAutoRate)
     setStutterMix(d.stutterMix)
+    setStutterPitchActive(d.stutterPitchActive); setStutterStartPitch(d.stutterStartPitch)
+    setStutterEndPitch(d.stutterEndPitch); setStutterAmpShape(d.stutterAmpShape)
+    setStutterJitter(d.stutterJitter); setStutterCurveShape(d.stutterCurveShape)
+    setStutterShapeRandom(d.stutterShapeRandom)
     setModulators({})
   }, [])
 
@@ -1911,6 +1938,13 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
     stutterRepeats, setStutterRepeats,
     stutterAutoRate, setStutterAutoRate,
     stutterMix, setStutterMix,
+    stutterPitchActive, setStutterPitchActive,
+    stutterStartPitch, setStutterStartPitch,
+    stutterEndPitch, setStutterEndPitch,
+    stutterAmpShape, setStutterAmpShape,
+    stutterJitter, setStutterJitter,
+    stutterCurveShape, setStutterCurveShape,
+    stutterShapeRandom, setStutterShapeRandom,
     triggerStutter,
     // chain order
     effectOrder, setEffectOrder,

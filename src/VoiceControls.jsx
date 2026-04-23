@@ -733,32 +733,67 @@ export function VoiceControls({ voice }) {
                 <Slider min={0.2} max={10} step={0.1} value={v.stutterAutoRate} onChange={v.setStutterAutoRate} />
               </Row>
             )}
-            <Row
-              label="Start cycle"
-              value={Math.round(v.stutterStartCycle * 1000)}
-              unit="ms"
-            >
+            <Row label="Start cycle" value={Math.round(v.stutterStartCycle * 1000)} unit="ms">
               <Slider min={0.02} max={0.5} step={0.005} value={v.stutterStartCycle} onChange={v.setStutterStartCycle} />
             </Row>
-            <Row
-              label="End cycle"
-              value={Math.round(v.stutterEndCycle * 1000)}
-              unit="ms"
-            >
+            <Row label="End cycle" value={Math.round(v.stutterEndCycle * 1000)} unit="ms">
               <Slider min={0.02} max={0.5} step={0.005} value={v.stutterEndCycle} onChange={v.setStutterEndCycle} />
             </Row>
             <Row label="Repeats" value={v.stutterRepeats}>
               <Slider min={2} max={32} step={1} value={v.stutterRepeats} onChange={v.setStutterRepeats} />
             </Row>
+            <Row label="Curve" value={v.stutterCurveShape}>
+              <div style={{ display: 'flex', gap: 4 }}>
+                {['linear', 'geometric', 'exponential', 'scurve'].map(s => (
+                  <button
+                    key={s}
+                    className={'tiny-toggle' + (v.stutterCurveShape === s ? ' active' : '')}
+                    onClick={() => v.setStutterCurveShape(s)}
+                    style={{ textTransform: 'uppercase', fontSize: 10, padding: '2px 6px' }}
+                  >{s === 'scurve' ? 'S-CURVE' : s.slice(0, 3).toUpperCase()}</button>
+                ))}
+              </div>
+            </Row>
+            <Row label="Pitch sweep" value={v.stutterPitchActive ? 'on' : 'off'}>
+              <button
+                className={'tiny-toggle' + (v.stutterPitchActive ? ' active' : '')}
+                onClick={() => v.setStutterPitchActive(!v.stutterPitchActive)}
+              >{v.stutterPitchActive ? 'ON' : 'OFF'}</button>
+            </Row>
+            {v.stutterPitchActive && <>
+              <Row label="Start pitch" value={(v.stutterStartPitch > 0 ? '+' : '') + v.stutterStartPitch} unit="st">
+                <Slider min={-24} max={24} step={1} value={v.stutterStartPitch} onChange={v.setStutterStartPitch} />
+              </Row>
+              <Row label="End pitch" value={(v.stutterEndPitch > 0 ? '+' : '') + v.stutterEndPitch} unit="st">
+                <Slider min={-24} max={24} step={1} value={v.stutterEndPitch} onChange={v.setStutterEndPitch} />
+              </Row>
+            </>}
+            <Row
+              label="Amp shape"
+              value={v.stutterAmpShape === 0 ? 'flat' : (v.stutterAmpShape > 0 ? `decay ${v.stutterAmpShape.toFixed(2)}` : `swell ${Math.abs(v.stutterAmpShape).toFixed(2)}`)}
+            >
+              <Slider min={-1} max={1} step={0.01} value={v.stutterAmpShape} onChange={v.setStutterAmpShape} />
+            </Row>
+            <Row label="Jitter" value={fmtPct(v.stutterJitter)}>
+              <Slider min={0} max={1} step={0.01} value={v.stutterJitter} onChange={v.setStutterJitter} />
+            </Row>
+            <Row label="Shape random" value={v.stutterShapeRandom ? 'on' : 'off'}>
+              <button
+                className={'tiny-toggle' + (v.stutterShapeRandom ? ' active' : '')}
+                onClick={() => v.setStutterShapeRandom(!v.stutterShapeRandom)}
+              >{v.stutterShapeRandom ? 'ON' : 'OFF'}</button>
+            </Row>
             <Row label="Mix" value={fmtPct(v.stutterMix)}>
               <Slider min={0} max={1} step={0.01} value={v.stutterMix} onChange={v.setStutterMix} />
             </Row>
             <div className="hint">
-              {v.stutterStartCycle > v.stutterEndCycle + 0.003
-                ? 'accelerating — intervals shrink start → end'
-                : v.stutterStartCycle < v.stutterEndCycle - 0.003
-                  ? 'decelerating — intervals grow start → end'
-                  : 'flat — constant interval across the burst'}
+              {v.stutterShapeRandom
+                ? 'shape-random overrides the cycle + repeats sliders per burst'
+                : v.stutterStartCycle > v.stutterEndCycle + 0.003
+                  ? 'accelerating — intervals shrink start → end'
+                  : v.stutterStartCycle < v.stutterEndCycle - 0.003
+                    ? 'decelerating — intervals grow start → end'
+                    : 'flat — constant interval across the burst'}
             </div>
           </div>
         </>}

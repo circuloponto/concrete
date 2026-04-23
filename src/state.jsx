@@ -115,14 +115,22 @@ export const defaultVoice = () => ({
   freezePitch: 0,
   freezeVoices: 4,
   freezePhase: 0.5,
-  // stutter / beat-repeat with explicit start/end cycle endpoints
+  // stutter / beat-repeat with explicit start/end cycle endpoints plus
+  // per-burst pitch + amp contours, jitter, and curve-shape selector.
   stutterActive: false,
   stutterMode: 'auto',      // 'auto' = random-interval bursts, 'manual' = trigger-only
-  stutterStartCycle: 0.2,   // seconds — first repeat's interval
-  stutterEndCycle: 0.05,    // seconds — last repeat's interval (shorter → accel, longer → decel)
+  stutterStartCycle: 0.2,
+  stutterEndCycle: 0.05,
   stutterRepeats: 8,
-  stutterAutoRate: 1.5,     // auto mode only: mean bursts/sec (Poisson)
+  stutterAutoRate: 1.5,
   stutterMix: 1,
+  stutterPitchActive: false,
+  stutterStartPitch: 0,     // semitones
+  stutterEndPitch: 0,
+  stutterAmpShape: 0,       // -1 swell · 0 flat · +1 decay
+  stutterJitter: 0,         // 0..1 — random spread on every per-repeat value
+  stutterCurveShape: 'geometric',  // 'linear' | 'geometric' | 'exponential' | 'scurve'
+  stutterShapeRandom: false,       // re-roll startCycle / endCycle / repeats per burst
   // effect chain order (all modules are serial, each with internal wet/dry)
   effectOrder: ['saturation', 'wow', 'filter', 'ringmod', 'tremolo', 'flanger', 'delay', 'reverb', 'granulator', 'freeze', 'doppler', 'banddoppler', 'bandreverb', 'stutter', 'autopan'],
   // modulation
