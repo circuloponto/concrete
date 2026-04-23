@@ -198,6 +198,12 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
     })
   }, [])
 
+  // per-effect output gain. Missing keys mean unity (1.0). Range 0..8.
+  const [effectGains, setEffectGains] = useState(initial.effectGains ?? {})
+  const setEffectGain = useCallback((name, value) => {
+    setEffectGains(prev => ({ ...prev, [name]: value }))
+  }, [])
+
   const shifterRef = useRef(null)
   const nodesRef = useRef(null)
   const rafRef = useRef(null)
@@ -1062,21 +1068,34 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
       modules.autopan = mod
     }
 
+    // Per-effect post-output gain stages. Each module's output is routed
+    // THROUGH its gain node before hitting the next module (or master).
+    // Initial value respects effectGains state, with missing keys = 1.0.
+    const effectGainNodes = {}
+    for (const name of Object.keys(modules)) {
+      effectGainNodes[name] = G(effectGains[name] ?? 1)
+    }
+
     // ---- Wire the chain in effectOrder ----
     const order = effectOrderRef.current
     const wireChain = () => {
-      // disconnect all module outputs + source buses
+      // disconnect all module outputs + per-effect gains + source buses
       for (const m of Object.values(modules)) try { m.output.disconnect() } catch {}
+      for (const g of Object.values(effectGainNodes)) try { g.disconnect() } catch {}
       try { scrubBus.disconnect() } catch {}
       try { shifterBus.disconnect() } catch {}
       try { master.disconnect() } catch {}
       // sources → first module
       const first = modules[order[0]]
       scrubBus.connect(first.input); shifterBus.connect(first.input)
-      // chain
-      for (let i = 0; i < order.length - 1; i++) modules[order[i]].output.connect(modules[order[i + 1]].input)
-      // last → master → output
-      modules[order[order.length - 1]].output.connect(master)
+      // chain — each module output → its own gain → next module input
+      for (let i = 0; i < order.length; i++) {
+        const mod = modules[order[i]]
+        const g = effectGainNodes[order[i]]
+        mod.output.connect(g)
+        if (i < order.length - 1) g.connect(modules[order[i + 1]].input)
+        else g.connect(master)
+      }
       master.connect(outputNode)
     }
     wireChain()
@@ -1094,6 +1113,7 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
       granBus: modules.granulator.granMix,
       cqIn, cqOut, cqFilters, buildCQBank, teardownCQBank,
       master, oscs, modules, wireChain,
+      effectGainNodes,
     }
     // Signal to the LFO router useEffect that fresh nodes are available.
     setNodesReadyV(v => v + 1)
@@ -1108,12 +1128,16 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
     for (const [, h] of router.map) { try { h.detach(0) } catch {} }
     router.map.clear()
     router.skipKeys = new Set()
-    const { oscs, cqFilters, modules, ...rest } = nodesRef.current
+    const { oscs, cqFilters, modules, effectGainNodes, ...rest } = nodesRef.current
     if (oscs) oscs.forEach(o => { try { o.stop() } catch {} })
     if (cqFilters) cqFilters.forEach(({ filter, gain }) => {
       try { filter.disconnect() } catch {}
       try { gain.disconnect() } catch {}
     })
+    // Per-effect gain stages (map of GainNodes keyed by effect name).
+    if (effectGainNodes) {
+      for (const g of Object.values(effectGainNodes)) { try { g.disconnect() } catch {} }
+    }
     // Lazy-built LFOs live outside oscs; tear them down via their modules.
     if (modules) {
       for (const m of Object.values(modules)) {
@@ -1326,6 +1350,7 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
       stutterActive, stutterMode, stutterStartCycle, stutterEndCycle, stutterRepeats, stutterAutoRate, stutterMix,
       stutterPitchActive, stutterStartPitch, stutterEndPitch, stutterAmpShape, stutterJitter, stutterCurveShape, stutterShapeRandom,
       effectOrder,
+      effectGains,
       modulators,
     })
   }, [onSnapshot,
@@ -1350,6 +1375,7 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
     stutterActive, stutterMode, stutterStartCycle, stutterEndCycle, stutterRepeats, stutterAutoRate, stutterMix,
     stutterPitchActive, stutterStartPitch, stutterEndPitch, stutterAmpShape, stutterJitter, stutterCurveShape, stutterShapeRandom,
     effectOrder,
+    effectGains,
     modulators,
   ])
 
@@ -1525,6 +1551,16 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
     nodesRef.current.freezeMixGain.gain.value = freezeActive ? freezeMix : 0
     if (nodesRef.current.freezeDry) nodesRef.current.freezeDry.gain.value = freezeActive ? (1 - freezeMix) : 1
   }, [freezeMix, freezeActive])
+
+  // Per-effect output gain — sync state → nodes on any change.
+  useEffect(() => {
+    const map = nodesRef.current?.effectGainNodes
+    if (!map) return
+    for (const name of Object.keys(map)) {
+      const val = effectGains[name] ?? 1
+      try { map[name].gain.value = val } catch {}
+    }
+  }, [effectGains, nodesReadyV])
 
   // Stutter: push all params straight to the worklet on any state change.
   // All stutter params are k-rate AudioParams so this is a handful of cheap
@@ -1769,6 +1805,7 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
     setStutterEndPitch(d.stutterEndPitch); setStutterAmpShape(d.stutterAmpShape)
     setStutterJitter(d.stutterJitter); setStutterCurveShape(d.stutterCurveShape)
     setStutterShapeRandom(d.stutterShapeRandom)
+    setEffectGains({})
     setModulators({})
   }, [])
 
@@ -1948,6 +1985,8 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
     triggerStutter,
     // chain order
     effectOrder, setEffectOrder,
+    // per-effect output gain
+    effectGains, setEffectGain,
     // modulation
     modulators, setModulator,
     play, stop, onScrub, toggleReverse, loadFromPool,

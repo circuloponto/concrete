@@ -369,6 +369,30 @@ function Row({ label, value, unit, children }) {
   )
 }
 
+// Per-effect output-gain slider. Scale goes up to 8× (+18 dB) so the user
+// can recover signal after destructive parts of the chain. Uses a linear
+// slider — a log taper would feel more natural near unity but linear keeps
+// the full top end easy to reach.
+function EffectGainRow({ voice, name }) {
+  const value = voice.effectGains?.[name] ?? 1
+  const label = value >= 1 ? `${value.toFixed(2)}×` : `${Math.round(value * 100)}%`
+  return (
+    <div className="row">
+      <label>Output</label>
+      <input
+        className="slider"
+        type="range"
+        min={0}
+        max={8}
+        step={0.01}
+        value={value}
+        onChange={e => voice.setEffectGain(name, +e.target.value)}
+      />
+      <span className="value">{label}</span>
+    </div>
+  )
+}
+
 // Slider row with a modulation toggle — expands an inline LFO strip when active.
 function ModRow({ voice, pKey, label, min, max, step, value, onChange, format, unit }) {
   const mod = voice.modulators?.[pKey]
@@ -525,11 +549,13 @@ export function VoiceControls({ voice }) {
           <div className="panel">
             <PanelTitle active={v.satActive} onToggle={() => v.setSatActive(!v.satActive)}>Saturation</PanelTitle>
             <Row label="Drive" value={fmtPct(v.saturation)}><Slider min={0} max={1} step={0.01} value={v.saturation} onChange={v.setSaturation} /></Row>
+            <EffectGainRow voice={v} name="saturation" />
           </div>
           <div className="panel">
             <PanelTitle active={v.wowActive} onToggle={() => v.setWowActive(!v.wowActive)}>Wow / Flutter</PanelTitle>
             <ModRow voice={v} pKey="wowRate" label="Rate" min={0} max={10} step={0.05} value={v.wowRate} onChange={v.setWowRate} format={fmtNum2} unit="Hz" />
             <ModRow voice={v} pKey="wowDepth" label="Depth" min={0} max={1} step={0.01} value={v.wowDepth} onChange={v.setWowDepth} format={fmtPct} />
+            <EffectGainRow voice={v} name="wow" />
           </div>
         </>}
 
@@ -548,6 +574,7 @@ export function VoiceControls({ voice }) {
             </div>
             <ModRow voice={v} pKey="filterHz" label="Cutoff" min={40} max={18000} step={10} value={v.filterHz} onChange={v.setFilterHz} format={fmtHz} />
             <ModRow voice={v} pKey="filterQ" label="Resonance" min={0.1} max={20} step={0.1} value={v.filterQ} onChange={v.setFilterQ} format={fmtNum1} />
+            <EffectGainRow voice={v} name="filter" />
           </div>
         </>}
 
@@ -556,6 +583,7 @@ export function VoiceControls({ voice }) {
             <PanelTitle active={v.ringActive} onToggle={() => v.setRingActive(!v.ringActive)}>Ring modulator</PanelTitle>
             <ModRow voice={v} pKey="ringFreq" label="Freq" min={1} max={2000} step={1} value={v.ringFreq} onChange={v.setRingFreq} format={fmtHz} />
             <ModRow voice={v} pKey="ringAmount" label="Amount" min={0} max={1} step={0.01} value={v.ringAmount} onChange={v.setRingAmount} format={fmtPct} />
+            <EffectGainRow voice={v} name="ringmod" />
           </div>
           <div className="panel">
             <PanelTitle active={v.flangerActive} onToggle={() => v.setFlangerActive(!v.flangerActive)}>Flanger</PanelTitle>
@@ -563,11 +591,13 @@ export function VoiceControls({ voice }) {
             <ModRow voice={v} pKey="flangerDepth" label="Depth" min={0} max={1} step={0.01} value={v.flangerDepth} onChange={v.setFlangerDepth} format={fmtPct} />
             <ModRow voice={v} pKey="flangerFb" label="Feedback" min={0} max={0.95} step={0.01} value={v.flangerFb} onChange={v.setFlangerFb} format={fmtPct} />
             <ModRow voice={v} pKey="flangerMix" label="Mix" min={0} max={1} step={0.01} value={v.flangerMix} onChange={v.setFlangerMix} format={fmtPct} />
+            <EffectGainRow voice={v} name="flanger" />
           </div>
           <div className="panel">
             <PanelTitle active={v.tremActive} onToggle={() => v.setTremActive(!v.tremActive)}>Tremolo</PanelTitle>
             <ModRow voice={v} pKey="tremRate" label="Rate" min={0.1} max={20} step={0.1} value={v.tremRate} onChange={v.setTremRate} format={fmtNum1} unit="Hz" />
             <ModRow voice={v} pKey="tremDepth" label="Depth" min={0} max={1} step={0.01} value={v.tremDepth} onChange={v.setTremDepth} format={fmtPct} />
+            <EffectGainRow voice={v} name="tremolo" />
           </div>
           <div className="panel">
             <PanelTitle active={v.panActive} onToggle={() => v.setPanActive(!v.panActive)}>Auto pan</PanelTitle>
@@ -584,6 +614,7 @@ export function VoiceControls({ voice }) {
             <ModRow voice={v} pKey="panRate" label="Rate" min={0.05} max={20} step={0.05} value={v.panRate} onChange={v.setPanRate} format={fmtNum2} unit="Hz" />
             <ModRow voice={v} pKey="panDepth" label="Depth" min={0} max={1} step={0.01} value={v.panDepth} onChange={v.setPanDepth} format={fmtPct} />
             <ModRow voice={v} pKey="panCenter" label="Center" min={-1} max={1} step={0.01} value={v.panCenter} onChange={v.setPanCenter} format={(x) => x.toFixed(2)} />
+            <EffectGainRow voice={v} name="autopan" />
           </div>
         </>}
 
@@ -593,6 +624,7 @@ export function VoiceControls({ voice }) {
             <ModRow voice={v} pKey="delayTime" label="Time" min={0} max={1.5} step={0.01} value={v.delayTime} onChange={v.setDelayTime} format={fmtMs} unit="ms" />
             <ModRow voice={v} pKey="delayFb" label="Feedback" min={0} max={0.95} step={0.01} value={v.delayFb} onChange={v.setDelayFb} format={fmtPct} />
             <ModRow voice={v} pKey="wet" label="Wet" min={0} max={1} step={0.01} value={v.wet} onChange={v.setWet} format={fmtPct} />
+            <EffectGainRow voice={v} name="delay" />
           </div>
           <div
             className="panel"
@@ -621,6 +653,7 @@ export function VoiceControls({ voice }) {
               <Row label="Size" value={fmtNum1(v.reverbSize)} unit="s"><Slider min={0.2} max={4} step={0.1} value={v.reverbSize} onChange={v.setReverbSize} /></Row>
             )}
             <ModRow voice={v} pKey="reverbWet" label="Wet" min={0} max={1} step={0.01} value={v.reverbWet} onChange={v.setReverbWet} format={fmtPct} />
+            <EffectGainRow voice={v} name="reverb" />
             <div className="hint">
               {v.reverbIRPoolId
                 ? `using ${pool.find(p => p.id === v.reverbIRPoolId)?.name || 'IR'} · drag a pool item here to swap`
@@ -642,6 +675,7 @@ export function VoiceControls({ voice }) {
             <Row label="Spray" value={fmtPct(v.granSpray)}><Slider min={0} max={0.5} step={0.001} value={v.granSpray} onChange={v.setGranSpray} /></Row>
             <Row label="Size" value={`${Math.round(v.granSize * 1000)}`} unit="ms"><Slider min={0.005} max={0.5} step={0.001} value={v.granSize} onChange={v.setGranSize} /></Row>
             <ModRow voice={v} pKey="granDensity" label="Density" min={1} max={100} step={1} value={v.granDensity} onChange={v.setGranDensity} format={(x) => `${Math.round(x)}`} unit="/s" />
+            <EffectGainRow voice={v} name="granulator" />
           </div>
           <div className="panel">
             <h4>Grain Pitch</h4>
@@ -700,6 +734,7 @@ export function VoiceControls({ voice }) {
             <Row label="Phase" value={fmtPct(v.freezePhase)}>
               <Slider min={0} max={1} step={0.01} value={v.freezePhase} onChange={v.setFreezePhase} />
             </Row>
+            <EffectGainRow voice={v} name="freeze" />
           </div>
           <div className="panel">
             <h4>Stutter
@@ -788,6 +823,7 @@ export function VoiceControls({ voice }) {
             <Row label="Mix" value={fmtPct(v.stutterMix)}>
               <Slider min={0} max={1} step={0.01} value={v.stutterMix} onChange={v.setStutterMix} />
             </Row>
+            <EffectGainRow voice={v} name="stutter" />
             <div className="hint">
               {v.stutterShapeRandom
                 ? 'shape-random overrides the cycle + repeats sliders per burst'
@@ -812,6 +848,7 @@ export function VoiceControls({ voice }) {
             <Row label="Range" value={v.dopplerRange.toFixed(1)} unit="m"><Slider min={1} max={50} step={0.5} value={v.dopplerRange} onChange={v.setDopplerRange} /></Row>
             <Row label="Min dist" value={v.dopplerMinDist.toFixed(1)} unit="m"><Slider min={0.2} max={10} step={0.1} value={v.dopplerMinDist} onChange={v.setDopplerMinDist} /></Row>
             <Row label="Mix" value={fmtPct(v.dopplerMix)}><Slider min={0} max={1} step={0.01} value={v.dopplerMix} onChange={v.setDopplerMix} /></Row>
+            <EffectGainRow voice={v} name="doppler" />
             <div className="hint">source passes by the listener · 343 m/s air speed</div>
           </div>
 
@@ -843,6 +880,7 @@ export function VoiceControls({ voice }) {
             <Row label="Mix" value={fmtPct(v.bandDopplerMix)}>
               <Slider min={0} max={1} step={0.01} value={v.bandDopplerMix} onChange={v.setBandDopplerMix} />
             </Row>
+            <EffectGainRow voice={v} name="banddoppler" />
             <div className="hint">splits signal into N log-spaced bands · each does its own pass-by</div>
           </div>
 
@@ -871,6 +909,7 @@ export function VoiceControls({ voice }) {
             <Row label="Mix" value={fmtPct(v.bandReverbMix)}>
               <Slider min={0} max={1} step={0.01} value={v.bandReverbMix} onChange={v.setBandReverbMix} />
             </Row>
+            <EffectGainRow voice={v} name="bandreverb" />
             <div className="hint">splits signal into N bands · each band has its own reverb tail</div>
           </div>
         </>}

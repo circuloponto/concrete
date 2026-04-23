@@ -133,6 +133,11 @@ export const defaultVoice = () => ({
   stutterShapeRandom: false,       // re-roll startCycle / endCycle / repeats per burst
   // effect chain order (all modules are serial, each with internal wet/dry)
   effectOrder: ['saturation', 'wow', 'filter', 'ringmod', 'tremolo', 'flanger', 'delay', 'reverb', 'granulator', 'freeze', 'doppler', 'banddoppler', 'bandreverb', 'stutter', 'autopan'],
+  // per-effect post-module output gain. Missing keys default to 1.0.
+  // Range exposed in UI is 0..8 (+18 dB headroom) so users can recover
+  // signal after destructive sections of the chain like deep filtering
+  // or narrow band-reverb tails.
+  effectGains: {},
   // modulation
   modulators: {},
 })
