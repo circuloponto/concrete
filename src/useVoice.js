@@ -1140,8 +1140,12 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
     }
 
     // ---- Wire the chain in effectOrder ----
-    const order = effectOrderRef.current
     const wireChain = () => {
+      // Re-read the order on EVERY call — not hoisted. Otherwise shuffle
+      // / drag-reorder change the state but wireChain keeps rewiring the
+      // same stale permutation, producing identical audio regardless of
+      // UI-visible reorder. (This was the bug that made shuffle silent.)
+      const order = effectOrderRef.current
       // disconnect all module outputs + per-effect gains + source buses
       for (const m of Object.values(modules)) try { m.output.disconnect() } catch {}
       for (const g of Object.values(effectGainNodes)) try { g.disconnect() } catch {}
