@@ -227,15 +227,31 @@ function ChainModal({ voice, onClose, onPickEffect }) {
     window.addEventListener('pointerup', onUp)
   }
 
+  const shuffleOrder = () => {
+    const cur = voice.effectOrder
+    if (!cur || cur.length < 2) return
+    const next = [...cur]
+    for (let i = next.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1))
+      ;[next[i], next[j]] = [next[j], next[i]]
+    }
+    voice.setEffectOrder(next)
+  }
+
   const cls = 'chain-modal-backdrop' + (mounted && !closing ? ' open' : '')
   return (
     <div className={cls} onClick={close}>
       <div className="chain-modal" onClick={e => e.stopPropagation()}>
         <div className="chain-modal-header">
           <h3>signal chain</h3>
+          <button
+            className="chain-modal-shuffle"
+            onClick={shuffleOrder}
+            title="shuffle effect order"
+          >⤨ shuffle</button>
           <button className="chain-modal-close" onClick={close} title="close (Esc)">×</button>
         </div>
-        <div className="chain-modal-hint">drag to reorder · shift-click to bypass</div>
+        <div className="chain-modal-hint">drag to reorder · shift-click to bypass · shuffle for a random permutation</div>
         <div className="chain-modal-list">
           {order.map((name, i) => {
             const keys = EFFECT_ACTIVE_KEYS[name]
