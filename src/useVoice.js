@@ -21,7 +21,7 @@ function modulatedValue(key, base, mod) {
 export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = null, audioNodes = null) {
   const reverbBus = audioNodes?.reverbBus || null
   const bandReverbBus = audioNodes?.bandReverbBus || null
-  const { getAudioCtx, getBuffer, pool, lowCpuMode } = useStore()
+  const { getAudioCtx, getBuffer, pool, lowCpuMode, addPoolItem } = useStore()
   const [buffer, setBuffer] = useState(null)
   const [sourceName, setSourceName] = useState('')
   const [loadedPoolId, setLoadedPoolId] = useState(initial.loadedPoolId || '')
@@ -95,6 +95,14 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
   const [granCQBands, setGranCQBands] = useState(initial.granCQBands ?? 16)
   const [granCQResonance, setGranCQResonance] = useState(initial.granCQResonance ?? 8)
   const [granMode, setGranMode] = useState(initial.granMode ?? 'source')
+
+  // Per-voice Print — record voice output to a pool buffer, optionally
+  // swap voice to cheap buffer playback with effects disabled.
+  const [printDurationSec, setPrintDurationSec] = useState(initial.printDurationSec ?? 30)
+  const [printing, setPrinting] = useState(false)
+  const [printProgress, setPrintProgress] = useState(0)
+  const [lastPrintId, setLastPrintId] = useState(null)
+  const [printedSwap, setPrintedSwap] = useState(initial.printedSwap ?? null)
 
   // doppler
   const [dopplerActive, setDopplerActive] = useState(initial.dopplerActive ?? false)
@@ -768,13 +776,13 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
       modules.reverb = mod
     }
 
-    // Granulator (injects grains; when active, can duck input)
+    // Granulator — dry passes through; grains sum on top via granMix.
+    // When inactive, physically disconnect the worklet so process() stops.
     { const input = G(), output = G()
       const granDry = G(1)
       const granMix = G(granGain)
       input.connect(granDry).connect(output)
       granMix.connect(output)
-      // CQ filterbank feeds into granMix
       const cqRoute = G(1)
       cqOut.connect(cqRoute).connect(granMix)
       let granNode = null
@@ -785,22 +793,34 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
             numberOfOutputs: 2,
             outputChannelCount: [2, 2],
           })
-          // Chain input feeds the worklet so live-mode grains see the
-          // processed upstream signal.
-          input.connect(granNode)
-          granNode.connect(granMix, 0)
-          granNode.connect(cqIn, 1)
         } catch (e) {
           console.error('[useVoice] granulator worklet construction failed', e)
           granNode = null
         }
       }
-      modules.granulator = { input, output, granDry, granMix, granBus: granMix, cqRoute, granNode } }
+      const mod = { input, output, granDry, granMix, granBus: granMix, cqRoute, granNode, wired: false }
+      mod.connectWorklet = () => {
+        if (mod.wired || !granNode) return
+        try { input.connect(granNode) } catch {}
+        try { granNode.connect(granMix, 0) } catch {}
+        try { granNode.connect(cqIn, 1) } catch {}
+        mod.wired = true
+      }
+      mod.disconnectWorklet = () => {
+        if (!mod.wired || !granNode) return
+        try { input.disconnect(granNode) } catch {}
+        try { granNode.disconnect(granMix, 0) } catch {}
+        try { granNode.disconnect(cqIn, 1) } catch {}
+        mod.wired = false
+      }
+      if (granActive && granNode) mod.connectWorklet()
+      modules.granulator = mod
+    }
 
-    // Freeze — dry passes through unconditionally; freeze worklet SUMS on
-    // top of the dry. freezeMix is now "freeze level", not a crossfade.
-    // Fix for the chain-contract bug: freezeDry at 0 silenced everything
-    // upstream when mix=1, breaking reorderable chains.
+    // Freeze — dry passes through unconditionally. Worklet sums on top
+    // when active; when inactive, physically disconnected so Chrome
+    // stops scheduling its process(). fixes chain-contract bug where
+    // freezeDry=0 silenced upstream on mix=1.
     { const input = G(), output = G()
       const freezeDry = G(1)
       const freezeMixGain = G(freezeActive ? freezeMix : 0)
@@ -814,16 +834,27 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
             numberOfOutputs: 1,
             outputChannelCount: [2],
           })
-          // Chain input feeds the worklet so live-mode grains see the
-          // processed upstream signal, not the raw source.
-          input.connect(freezeNode)
-          freezeNode.connect(freezeMixGain)
         } catch (e) {
           console.error('[useVoice] freeze worklet construction failed', e)
           freezeNode = null
         }
       }
-      modules.freeze = { input, output, freezeDry, freezeMixGain, freezeNode } }
+      const mod = { input, output, freezeDry, freezeMixGain, freezeNode, wired: false }
+      mod.connectWorklet = () => {
+        if (mod.wired || !freezeNode) return
+        try { input.connect(freezeNode) } catch {}
+        try { freezeNode.connect(freezeMixGain) } catch {}
+        mod.wired = true
+      }
+      mod.disconnectWorklet = () => {
+        if (!mod.wired || !freezeNode) return
+        try { input.disconnect(freezeNode) } catch {}
+        try { freezeNode.disconnect(freezeMixGain) } catch {}
+        mod.wired = false
+      }
+      if (freezeActive && freezeNode) mod.connectWorklet()
+      modules.freeze = mod
+    }
 
     // Doppler
     { const input = G(), output = G()
@@ -1038,9 +1069,9 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
       modules.bandreverb = mod
     }
 
-    // Stutter / beat-repeat with curve-shaped intervals. Ring-buffer
-    // capture + burst playback lives in stutter.worklet.js; the module
-    // is a simple input→worklet→output with a dry passthrough fallback.
+    // Stutter / beat-repeat. When inactive, physically disconnect the
+    // worklet so Chrome stops scheduling process() calls — dry passes
+    // through input → output directly.
     { const input = G(), output = G()
       let stutterNode = null
       if (isWorkletReady(ctx)) {
@@ -1050,14 +1081,30 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
             numberOfOutputs: 1,
             outputChannelCount: [2],
           })
-          input.connect(stutterNode).connect(output)
         } catch (e) {
           console.error('[useVoice] stutter worklet construction failed', e)
           stutterNode = null
         }
       }
-      if (!stutterNode) input.connect(output)  // passthrough fallback
-      modules.stutter = { input, output, stutterNode }
+      const mod = { input, output, stutterNode, wired: false }
+      mod.connectWorklet = () => {
+        if (mod.wired || !stutterNode) return
+        try { input.disconnect(output) } catch {}
+        try { input.connect(stutterNode) } catch {}
+        try { stutterNode.connect(output) } catch {}
+        mod.wired = true
+      }
+      mod.disconnectWorklet = () => {
+        if (!mod.wired || !stutterNode) return
+        try { input.disconnect(stutterNode) } catch {}
+        try { stutterNode.disconnect(output) } catch {}
+        try { input.connect(output) } catch {}
+        mod.wired = false
+      }
+      // Initial state — passthrough; useEffect below will wire if active.
+      input.connect(output)
+      if (stutterActive && stutterNode) mod.connectWorklet()
+      modules.stutter = mod
     }
 
     // Auto Pan — lazy LFO; StereoPanner stays in the graph.
@@ -1113,7 +1160,12 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
         else g.connect(master)
       }
       master.connect(outputNode)
+      master.connect(printDest)
     }
+    // Parallel tap on the voice master for the Print feature. A private
+    // MediaStreamAudioDestinationNode receives exactly what outputNode gets
+    // from this voice; a MediaRecorder on its stream captures it realtime.
+    const printDest = ctx.createMediaStreamDestination()
     wireChain()
 
     // flatten module nodes for backward-compatible access by live update effects
@@ -1130,6 +1182,7 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
       cqIn, cqOut, cqFilters, buildCQBank, teardownCQBank,
       master, oscs, modules, wireChain,
       effectGainNodes,
+      printDest,
     }
     // Signal to the LFO router useEffect that fresh nodes are available.
     setNodesReadyV(v => v + 1)
@@ -1367,6 +1420,7 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
       stutterPitchActive, stutterStartPitch, stutterEndPitch, stutterAmpShape, stutterJitter, stutterCurveShape, stutterShapeRandom,
       effectOrder,
       effectGains,
+      printDurationSec, printedSwap,
       modulators,
     })
   }, [onSnapshot,
@@ -1392,6 +1446,7 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
     stutterPitchActive, stutterStartPitch, stutterEndPitch, stutterAmpShape, stutterJitter, stutterCurveShape, stutterShapeRandom,
     effectOrder,
     effectGains,
+    printDurationSec, printedSwap,
     modulators,
   ])
 
@@ -1561,6 +1616,27 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
     nodesRef.current.granBus.gain.value = granGain
     if (nodesRef.current.granDry) nodesRef.current.granDry.gain.value = granActive ? 0 : 1
   }, [granGain, granActive])
+
+  // Bypass-disconnect on active flags for the remaining worklet-backed
+  // in-chain effects. Reverb already has this pattern at line 1591.
+  useEffect(() => {
+    const m = nodesRef.current?.modules?.stutter
+    if (!m) return
+    if (stutterActive) m.connectWorklet?.()
+    else m.disconnectWorklet?.()
+  }, [stutterActive, nodesReadyV])
+  useEffect(() => {
+    const m = nodesRef.current?.modules?.freeze
+    if (!m) return
+    if (freezeActive) m.connectWorklet?.()
+    else m.disconnectWorklet?.()
+  }, [freezeActive, nodesReadyV])
+  useEffect(() => {
+    const m = nodesRef.current?.modules?.granulator
+    if (!m) return
+    if (granActive) m.connectWorklet?.()
+    else m.disconnectWorklet?.()
+  }, [granActive, nodesReadyV])
   // freeze: wet/dry crossfade inside the freeze module
   useEffect(() => {
     if (!nodesRef.current) return
@@ -1825,7 +1901,93 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
     setStutterShapeRandom(d.stutterShapeRandom)
     setEffectGains({})
     setModulators({})
+    setPrintedSwap(null)
+    setPrintDurationSec(d.printDurationSec ?? 30)
   }, [])
+
+  // Per-voice Print: captures voice output via a private MediaStream for
+  // durationSec seconds, decodes into an AudioBuffer, adds to pool.
+  // Returns the new pool item id. Caller may then swap the voice over
+  // to cheap buffer playback via swapToPrint().
+  const printVoiceRef = useRef(null)
+  const printVoice = useCallback(async (durationSec) => {
+    const nodes = nodesRef.current
+    const printDest = nodes?.printDest
+    if (!printDest || printing) return null
+    const dur = Math.max(1, Math.min(120, durationSec || 30))
+    setPrinting(true)
+    setPrintProgress(0)
+    try {
+      const ctx = getAudioCtx()
+      const chunks = []
+      const rec = new MediaRecorder(printDest.stream, { mimeType: 'audio/webm;codecs=opus' })
+      rec.ondataavailable = (e) => { if (e.data.size > 0) chunks.push(e.data) }
+      printVoiceRef.current = rec
+      rec.start()
+      const startT = ctx.currentTime
+      const progressTimer = setInterval(() => {
+        const elapsed = ctx.currentTime - startT
+        setPrintProgress(Math.min(1, elapsed / dur))
+      }, 100)
+      const stopPromise = new Promise(res => { rec.onstop = res })
+      await new Promise(res => setTimeout(res, dur * 1000))
+      try { rec.stop() } catch {}
+      await stopPromise
+      clearInterval(progressTimer)
+      printVoiceRef.current = null
+      const blob = new Blob(chunks, { type: 'audio/webm' })
+      const arr = await blob.arrayBuffer()
+      const buf = await ctx.decodeAudioData(arr)
+      const stamp = new Date().toISOString().slice(11, 19)
+      const name = `voice${voiceNumber} · print · ${stamp}`
+      const id = addPoolItem(name, buf, 'print')
+      setLastPrintId(id)
+      return id
+    } catch (e) {
+      console.error('[useVoice] print failed', e)
+      return null
+    } finally {
+      setPrinting(false)
+      setPrintProgress(0)
+    }
+  }, [printing, voiceNumber, getAudioCtx, addPoolItem])
+
+  // Swap voice to cheap buffer playback. Snapshots current active flags
+  // so unprint() can restore them; sets all effects off; loads the
+  // printed pool item as the voice's source.
+  const swapToPrint = useCallback((poolId) => {
+    if (!poolId) return
+    const previousActives = {
+      satActive, wowActive, filterActive, ringActive, tremActive, flangerActive,
+      panActive, delayActive, reverbActive, granActive, freezeActive,
+      dopplerActive, bandDopplerActive, bandReverbActive, stutterActive,
+    }
+    setSatActive(false); setWowActive(false); setFilterActive(false)
+    setRingActive(false); setTremActive(false); setFlangerActive(false)
+    setPanActive(false); setDelayActive(false); setReverbActive(false)
+    setGranActive(false); setFreezeActive(false)
+    setDopplerActive(false); setBandDopplerActive(false); setBandReverbActive(false)
+    setStutterActive(false)
+    loadFromPool(poolId)
+    setPrintedSwap({ poolId, previousActives })
+  }, [
+    loadFromPool,
+    satActive, wowActive, filterActive, ringActive, tremActive, flangerActive,
+    panActive, delayActive, reverbActive, granActive, freezeActive,
+    dopplerActive, bandDopplerActive, bandReverbActive, stutterActive,
+  ])
+
+  const unprint = useCallback(() => {
+    if (!printedSwap) return
+    const p = printedSwap.previousActives
+    setSatActive(p.satActive); setWowActive(p.wowActive); setFilterActive(p.filterActive)
+    setRingActive(p.ringActive); setTremActive(p.tremActive); setFlangerActive(p.flangerActive)
+    setPanActive(p.panActive); setDelayActive(p.delayActive); setReverbActive(p.reverbActive)
+    setGranActive(p.granActive); setFreezeActive(p.freezeActive)
+    setDopplerActive(p.dopplerActive); setBandDopplerActive(p.bandDopplerActive); setBandReverbActive(p.bandReverbActive)
+    setStutterActive(p.stutterActive)
+    setPrintedSwap(null)
+  }, [printedSwap])
 
   // Musical-range randomization: picks sensible values for each parameter and
   // toggles each effect independently with a per-effect probability so the
@@ -2009,6 +2171,11 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
     effectGains, setEffectGain,
     // modulation
     modulators, setModulator,
+    // print / swap
+    printDurationSec, setPrintDurationSec,
+    printing, printProgress, lastPrintId,
+    printedSwap,
+    printVoice, swapToPrint, unprint,
     play, stop, onScrub, toggleReverse, loadFromPool,
     randomize, reset,
   }

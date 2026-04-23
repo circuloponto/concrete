@@ -547,6 +547,47 @@ export function VoiceControls({ voice }) {
             <ModRow voice={v} pKey="voiceGain" label="Gain" min={0} max={1.5} step={0.01} value={v.voiceGain} onChange={v.setVoiceGain} format={fmtPct} />
           </div>
           <div className="panel">
+            <h4>Print</h4>
+            <Row label="Length" value={v.printDurationSec} unit="s">
+              <Slider min={10} max={120} step={1} value={v.printDurationSec} onChange={v.setPrintDurationSec} />
+            </Row>
+            {v.printedSwap ? (
+              <Row label="Swapped" value={v.printedSwap.poolId.slice(-6)}>
+                <button
+                  className="tiny-toggle active"
+                  onClick={() => v.unprint()}
+                  style={{ width: '100%', padding: '4px 0' }}
+                >■ UNPRINT · restore effects</button>
+              </Row>
+            ) : v.printing ? (
+              <Row label="Recording" value={`${Math.round(v.printProgress * 100)}%`}>
+                <div style={{ flex: 1, height: 8, background: 'var(--track-bg)', borderRadius: 4, overflow: 'hidden' }}>
+                  <div style={{ width: `${v.printProgress * 100}%`, height: '100%', background: 'var(--hl)' }} />
+                </div>
+              </Row>
+            ) : (
+              <Row label="Bounce" value="">
+                <button
+                  onClick={() => v.printVoice(v.printDurationSec)}
+                  disabled={!v.buffer}
+                  style={{ width: '100%', padding: '6px 0', fontWeight: 600 }}
+                >▸ PRINT {v.printDurationSec}s → pool</button>
+              </Row>
+            )}
+            {v.lastPrintId && !v.printedSwap && !v.printing && (
+              <Row label="Last print" value={v.lastPrintId.slice(-6)}>
+                <button
+                  className="tiny-toggle"
+                  onClick={() => v.swapToPrint(v.lastPrintId)}
+                  style={{ width: '100%', padding: '4px 0' }}
+                >→ SWAP · play printed buffer (effects off)</button>
+              </Row>
+            )}
+            <div className="hint">
+              realtime capture · bounces voice output to a pool item · swap to replace live chain with cheap playback
+            </div>
+          </div>
+          <div className="panel">
             <PanelTitle active={v.satActive} onToggle={() => v.setSatActive(!v.satActive)}>Saturation</PanelTitle>
             <Row label="Drive" value={fmtPct(v.saturation)}><Slider min={0} max={1} step={0.01} value={v.saturation} onChange={v.setSaturation} /></Row>
             <EffectGainRow voice={v} name="saturation" />

@@ -117,6 +117,9 @@ export const defaultVoice = () => ({
   freezePitch: 0,
   freezeVoices: 4,
   freezePhase: 0.5,
+  // per-voice Print — offline bounce of voice output to pool
+  printDurationSec: 30,
+  printedSwap: null,
   // stutter / beat-repeat with explicit start/end cycle endpoints plus
   // per-burst pitch + amp contours, jitter, and curve-shape selector.
   stutterActive: false,
