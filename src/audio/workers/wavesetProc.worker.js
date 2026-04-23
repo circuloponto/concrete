@@ -394,6 +394,50 @@ function opReshape(channels, groups, factor, sampleRate) {
   return out
 }
 
+// Waveset morph — probabilistic A→B interleave across the output duration.
+// For each output group g, compute warped-u ∈ [0,1] at position g/(N-1);
+// with probability u pick a group from sourceB (resampled to A's group
+// length), else keep A's group. Length-preserving.
+function opMorph(channels, groups, sourceBChannels, lpCutoff, groupSize, sampleRate, curveShape, direction) {
+  if (!sourceBChannels || !sourceBChannels[0] || sourceBChannels[0].length === 0) return channels
+  const bGroups = detectGroups(sourceBChannels, lpCutoff, groupSize, sampleRate)
+  if (bGroups.length === 0) return channels
+  const totalLen = channels[0].length
+  const numCh = channels.length
+  const numChB = sourceBChannels.length
+  const out = allocChannels(numCh, totalLen)
+  const N = groups.length
+  const reverse = direction === 'reverse'
+  for (let g = 0; g < N; g++) {
+    const u = N > 1 ? g / (N - 1) : 0
+    const warped = warpU(u, curveShape)
+    const t = reverse ? 1 - warped : warped
+    const srcGroup = groups[g]
+    const srcLen = srcGroup.end - srcGroup.start
+    if (srcLen <= 0) continue
+    const pickB = Math.random() < t
+    if (pickB) {
+      const bg = bGroups[g % bGroups.length]
+      const bLen = bg.end - bg.start
+      if (bLen <= 0) {
+        for (let c = 0; c < numCh; c++) {
+          out[c].set(channels[c].subarray(srcGroup.start, srcGroup.end), srcGroup.start)
+        }
+        continue
+      }
+      for (let c = 0; c < numCh; c++) {
+        const bc = c < numChB ? sourceBChannels[c] : sourceBChannels[0]
+        resampleRange(bc, bg.start, bg.end, out[c], srcGroup.start, srcLen)
+      }
+    } else {
+      for (let c = 0; c < numCh; c++) {
+        out[c].set(channels[c].subarray(srcGroup.start, srcGroup.end), srcGroup.start)
+      }
+    }
+  }
+  return out
+}
+
 function opMultiply(channels, groups) {
   const out = allocChannels(channels.length, channels[0].length)
   for (let gi = 0; gi < groups.length; gi++) {
@@ -491,6 +535,16 @@ function runPipeline(initialChannels, sampleRate, lpCutoff, groupSize, steps, pr
         break
       case 'reshape':
         channels = opReshape(channels, groups, params.factor ?? 1, sampleRate)
+        needsRedetect = true
+        break
+      case 'morph':
+        channels = opMorph(
+          channels, groups,
+          params.sourceBChannels,
+          lpCutoff, groupSize, sampleRate,
+          params.curveShape || 'linear',
+          params.direction || 'forward',
+        )
         needsRedetect = true
         break
       default:

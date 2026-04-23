@@ -21,6 +21,8 @@ const OP_DEFAULTS = {
   // Distortion family — neighbor-interaction
   average: { n: 4 },
   multiply: {},
+  // Multi-source family
+  morph: { sourceBId: '', curveShape: 'linear', direction: 'forward' },
 }
 
 const OP_FAMILIES = [
@@ -35,6 +37,10 @@ const OP_FAMILIES = [
   {
     label: 'Distortion — neighbor interaction',
     ops: ['average', 'multiply'],
+  },
+  {
+    label: 'Multi-source',
+    ops: ['morph'],
   },
 ]
 
@@ -53,9 +59,10 @@ const OP_LABELS = {
   reshape: 'Reshape / transpose',
   average: 'Average neighbors',
   multiply: 'Multiply w/ next',
+  morph: 'Morph (Wishart)',
 }
 
-function StepParams({ step, onChange }) {
+function StepParams({ step, onChange, pool = [] }) {
   const set = (patch) => onChange({ ...step, params: { ...step.params, ...patch } })
   const p = step.params || {}
   switch (step.op) {
@@ -137,6 +144,45 @@ function StepParams({ step, onChange }) {
           <span>{(p.factor ?? 0.5).toFixed(2)}×</span>
         </label>
       )
+    case 'morph':
+      return (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 4, flex: 1 }}>
+          <div className="wv-param-row" style={{ gap: 4, alignItems: 'center' }}>
+            <span style={{ fontSize: 10, color: 'var(--dim)', textTransform: 'uppercase', letterSpacing: 1 }}>B</span>
+            <select
+              value={p.sourceBId || ''}
+              onChange={e => set({ sourceBId: e.target.value })}
+              style={{ flex: 1, minWidth: 0 }}
+            >
+              <option value="">(pick source B)</option>
+              {pool.map(s => (
+                <option key={s.id} value={s.id}>{s.name} · {s.duration.toFixed(1)}s</option>
+              ))}
+            </select>
+          </div>
+          <div className="wv-param-row" style={{ gap: 4 }}>
+            {['linear', 'geometric', 'exponential', 'scurve'].map(s => (
+              <button
+                key={s}
+                className={'tiny-toggle' + ((p.curveShape || 'linear') === s ? ' active' : '')}
+                onClick={() => set({ curveShape: s })}
+                style={{ textTransform: 'uppercase', fontSize: 10, padding: '2px 6px' }}
+              >{s === 'scurve' ? 'S' : s.slice(0, 3).toUpperCase()}</button>
+            ))}
+            <span style={{ width: 8 }} />
+            <button
+              className={'tiny-toggle' + ((p.direction || 'forward') === 'forward' ? ' active' : '')}
+              onClick={() => set({ direction: 'forward' })}
+              title="morph A→B across output"
+            >A→B</button>
+            <button
+              className={'tiny-toggle' + (p.direction === 'reverse' ? ' active' : '')}
+              onClick={() => set({ direction: 'reverse' })}
+              title="morph B→A across output"
+            >B→A</button>
+          </div>
+        </div>
+      )
     default:
       return null
   }
@@ -199,7 +245,7 @@ export function WavesetPanel() {
         groupSize,
         steps,
       }
-      const outBuf = await processWavesets(ctx, srcBuffer, pipeline, (p) => setProgress(p))
+      const outBuf = await processWavesets(ctx, srcBuffer, pipeline, (p) => setProgress(p), getBuffer)
       const summary = summarizePipeline(pipeline)
       const name = `${sourceItem.name} · ${summary}`
       addPoolItem(name, outBuf, 'sound')
@@ -277,7 +323,7 @@ export function WavesetPanel() {
               <span className="wv-step-idx">{i + 1}.</span>
               <span className="wv-step-op">{OP_LABELS[step.op] || step.op}</span>
               <div className="wv-step-params">
-                <StepParams step={step} onChange={(next) => updateStep(i, next)} />
+                <StepParams step={step} onChange={(next) => updateStep(i, next)} pool={sources} />
               </div>
               <button className="wv-step-remove" onClick={() => removeStep(i)} title="remove step">×</button>
             </div>

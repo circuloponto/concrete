@@ -35,22 +35,43 @@ function getWorker(ctx) {
   return w
 }
 
+// Clone an AudioBuffer's channels into fresh transferable Float32Arrays.
+function cloneBufferChannels(buffer) {
+  const out = []
+  for (let c = 0; c < buffer.numberOfChannels; c++) {
+    const copy = new Float32Array(buffer.length)
+    copy.set(buffer.getChannelData(c))
+    out.push(copy)
+  }
+  return out
+}
+
 // Process an AudioBuffer through a pipeline. Resolves to a new AudioBuffer.
 // pipeline: { lpCutoff: number|null, groupSize: number, steps: [{op, params}] }
-export function processWavesets(ctx, buffer, pipeline, onProgress) {
+// For morph steps, params.sourceBId must be a pool id; caller supplies
+// resolveBuffer(poolId) → AudioBuffer so this module stays side-effect-free
+// on the store.
+export function processWavesets(ctx, buffer, pipeline, onProgress, resolveBuffer) {
   return new Promise((resolve, reject) => {
     const w = getWorker(ctx)
     if (!w) { reject(new Error('worker unavailable')); return }
     const id = ++nextId.value
     const pending = pendingByContext.get(ctx)
-    // Clone channel data so the worker can take ownership without destroying
-    // the caller's original AudioBuffer.
-    const channels = []
-    for (let c = 0; c < buffer.numberOfChannels; c++) {
-      const copy = new Float32Array(buffer.length)
-      copy.set(buffer.getChannelData(c))
-      channels.push(copy)
-    }
+    const channels = cloneBufferChannels(buffer)
+    // Transfer list — includes the primary source's channel buffers plus
+    // any morph-step sourceB buffers.
+    const transfer = channels.map(c => c.buffer)
+    // Walk steps, resolve morph sourceBId → fresh Float32Arrays, add to transfer.
+    const steps = (pipeline.steps || []).map(step => {
+      if (step.op !== 'morph') return step
+      const sourceBId = step.params?.sourceBId
+      if (!sourceBId || !resolveBuffer) return step
+      const bBuf = resolveBuffer(sourceBId)
+      if (!bBuf) return step
+      const bChannels = cloneBufferChannels(bBuf)
+      for (const ch of bChannels) transfer.push(ch.buffer)
+      return { ...step, params: { ...step.params, sourceBChannels: bChannels } }
+    })
     pending.set(id, {
       onProgress,
       resolve: (outChannels) => {
@@ -68,8 +89,8 @@ export function processWavesets(ctx, buffer, pipeline, onProgress) {
       sampleRate: ctx.sampleRate,
       lpCutoff: pipeline.lpCutoff ?? null,
       groupSize: pipeline.groupSize ?? 1,
-      steps: pipeline.steps || [],
-    }, channels.map(c => c.buffer))
+      steps,
+    }, transfer)
   })
 }
 
@@ -93,6 +114,11 @@ export function summarizePipeline(pipeline) {
       case 'reshape': return `rsh${(s.params?.factor ?? 1).toFixed(2)}x`
       case 'average': return `avg${s.params?.n || 3}`
       case 'multiply': return 'mul'
+      case 'morph': {
+        const tag = (s.params?.sourceBId || '').slice(-4)
+        const dir = s.params?.direction === 'reverse' ? '←' : '→'
+        return `morph${dir}${tag || '?'}`
+      }
       default: return s.op
     }
   }
