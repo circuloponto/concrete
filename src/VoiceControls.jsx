@@ -670,6 +670,18 @@ export function VoiceControls({ voice }) {
                 onClick={() => v.setGranActive(!v.granActive)}
               >{v.granActive ? 'ON' : 'OFF'}</button>
             </h4>
+            <Row label="Source" value={v.granMode === 'live' ? 'live chain' : 'loaded buffer'}>
+              <div style={{ display: 'flex', gap: 4 }}>
+                <button
+                  className={'tiny-toggle' + (v.granMode === 'source' ? ' active' : '')}
+                  onClick={() => v.setGranMode('source')}
+                >SOURCE</button>
+                <button
+                  className={'tiny-toggle' + (v.granMode === 'live' ? ' active' : '')}
+                  onClick={() => v.setGranMode('live')}
+                >LIVE</button>
+              </div>
+            </Row>
             <ModRow voice={v} pKey="granPos" label="Position" min={0} max={1} step={0.001} value={v.granPos} onChange={v.setGranPos} format={fmtPct} />
             <Row label="Drift" value={v.granDrift.toFixed(2)}><Slider min={-1} max={1} step={0.01} value={v.granDrift} onChange={v.setGranDrift} /></Row>
             <Row label="Spray" value={fmtPct(v.granSpray)}><Slider min={0} max={0.5} step={0.001} value={v.granSpray} onChange={v.setGranSpray} /></Row>
@@ -706,6 +718,18 @@ export function VoiceControls({ voice }) {
           </div>
           <div className="panel">
             <h4>Parameters</h4>
+            <Row label="Source" value={v.freezeMode === 'live' ? 'live chain' : 'loaded buffer'}>
+              <div style={{ display: 'flex', gap: 4 }}>
+                <button
+                  className={'tiny-toggle' + (v.freezeMode === 'source' ? ' active' : '')}
+                  onClick={() => v.setFreezeMode('source')}
+                >SOURCE</button>
+                <button
+                  className={'tiny-toggle' + (v.freezeMode === 'live' ? ' active' : '')}
+                  onClick={() => v.setFreezeMode('live')}
+                >LIVE</button>
+              </div>
+            </Row>
             <ModRow voice={v} pKey="freezePos" label="Position" min={0} max={1} step={0.001} value={v.freezePos} onChange={v.setFreezePos}
               format={(x) => v.buffer ? `${(x * v.buffer.duration).toFixed(2)}s` : fmtPct(x)} />
             <Row

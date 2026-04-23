@@ -83,6 +83,7 @@ export const defaultVoice = () => ({
   granConstQ: false,
   granCQBands: 16,
   granCQResonance: 8,
+  granMode: 'source',      // 'source' = loaded buffer · 'live' = 5s ring of chain input
   // doppler
   dopplerActive: false,
   dopplerSpeed: 0.5,
@@ -108,6 +109,7 @@ export const defaultVoice = () => ({
   bandReverbMix: 0,
   // spectral freeze
   freezeActive: false,
+  freezeMode: 'source',  // 'source' = loaded buffer · 'live' = 5s ring of chain input
   freezePos: 0.5,
   freezeGrain: 0.06,
   freezeMix: 1,

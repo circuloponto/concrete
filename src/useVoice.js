@@ -94,6 +94,7 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
   const [granConstQ, setGranConstQ] = useState(initial.granConstQ ?? false)
   const [granCQBands, setGranCQBands] = useState(initial.granCQBands ?? 16)
   const [granCQResonance, setGranCQResonance] = useState(initial.granCQResonance ?? 8)
+  const [granMode, setGranMode] = useState(initial.granMode ?? 'source')
 
   // doppler
   const [dopplerActive, setDopplerActive] = useState(initial.dopplerActive ?? false)
@@ -123,6 +124,7 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
 
   // spectral freeze
   const [freezeActive, setFreezeActive] = useState(initial.freezeActive ?? false)
+  const [freezeMode, setFreezeMode] = useState(initial.freezeMode ?? 'source')
   const [freezePos, setFreezePos] = useState(initial.freezePos ?? 0.5)
   const [freezeGrain, setFreezeGrain] = useState(initial.freezeGrain ?? 0.06)
   const [freezeMix, setFreezeMix] = useState(initial.freezeMix ?? 1)
@@ -233,7 +235,7 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
   // don't force it to restart and re-schedule grains.
   const granRef = useRef({})
   granRef.current = {
-    active: granActive, size: granSize, density: granDensity, pos: granPos, drift: granDrift,
+    active: granActive, mode: granMode, size: granSize, density: granDensity, pos: granPos, drift: granDrift,
     spray: granSpray, pitch: granPitch, pitchSpread: granPitchSpread, gain: granGain,
     constQ: granConstQ, cqBands: granCQBands, cqResonance: granCQResonance,
   }
@@ -269,10 +271,11 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
     active: bandReverbActive, mix: bandReverbMix, gain: bandReverbGain,
   }
 
-  // Freeze params mirror — reads from voice's own buffer
+  // Freeze params mirror — reads from voice's own buffer in source mode,
+  // or the worklet's live ring in live mode.
   const freezeRef = useRef({})
   freezeRef.current = {
-    active: freezeActive, pos: freezePos, grain: freezeGrain,
+    active: freezeActive, mode: freezeMode, pos: freezePos, grain: freezeGrain,
     mix: freezeMix, gainVal: freezeGainVal, pitch: freezePitch, voices: freezeVoices, phase: freezePhase,
   }
 
@@ -337,6 +340,8 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
         if (last.pitchSpread !== p.pitchSpread) { params.get('pitchSpread').value = p.pitchSpread; last.pitchSpread = p.pitchSpread }
         if (last.voicePitch !== vp) { params.get('voicePitch').value = vp; last.voicePitch = vp }
         if (last.active !== a) { params.get('active').value = a; last.active = a }
+        const m = p.mode === 'live' ? 1 : 0
+        if (last.mode !== m) { params.get('mode').value = m; last.mode = m }
       }
       // Band doppler worklet — dirty-checked k-rate param push.
       const bdMod = nodesRef.current?.modules?.banddoppler
@@ -360,6 +365,7 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
         const params = freezeNode.parameters
         const vp = pitchRef.current
         const a = f.active && f.mix > 0 ? 1 : 0
+        const m = f.mode === 'live' ? 1 : 0
         if (last.pos !== f.pos) { params.get('pos').value = f.pos; last.pos = f.pos }
         if (last.grain !== f.grain) { params.get('grain').value = f.grain; last.grain = f.grain }
         if (last.gainVal !== f.gainVal) { params.get('gain').value = f.gainVal; last.gainVal = f.gainVal }
@@ -368,6 +374,7 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
         if (last.voices !== f.voices) { params.get('voices').value = f.voices; last.voices = f.voices }
         if (last.phase !== f.phase) { params.get('phase').value = f.phase; last.phase = f.phase }
         if (last.active !== a) { params.get('active').value = a; last.active = a }
+        if (last.mode !== m) { params.get('mode').value = m; last.mode = m }
       }
     }
     if (!tickNeeded) {
@@ -774,10 +781,13 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
       if (isWorkletReady(ctx)) {
         try {
           granNode = new AudioWorkletNode(ctx, 'granulator', {
-            numberOfInputs: 0,
+            numberOfInputs: 1,
             numberOfOutputs: 2,
             outputChannelCount: [2, 2],
           })
+          // Chain input feeds the worklet so live-mode grains see the
+          // processed upstream signal.
+          input.connect(granNode)
           granNode.connect(granMix, 0)
           granNode.connect(cqIn, 1)
         } catch (e) {
@@ -787,9 +797,12 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
       }
       modules.granulator = { input, output, granDry, granMix, granBus: granMix, cqRoute, granNode } }
 
-    // Freeze (ducks input via mix, adds own grains)
+    // Freeze — dry passes through unconditionally; freeze worklet SUMS on
+    // top of the dry. freezeMix is now "freeze level", not a crossfade.
+    // Fix for the chain-contract bug: freezeDry at 0 silenced everything
+    // upstream when mix=1, breaking reorderable chains.
     { const input = G(), output = G()
-      const freezeDry = G(freezeActive ? (1 - freezeMix) : 1)
+      const freezeDry = G(1)
       const freezeMixGain = G(freezeActive ? freezeMix : 0)
       input.connect(freezeDry).connect(output)
       freezeMixGain.connect(output)
@@ -797,10 +810,13 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
       if (isWorkletReady(ctx)) {
         try {
           freezeNode = new AudioWorkletNode(ctx, 'freeze', {
-            numberOfInputs: 0,
+            numberOfInputs: 1,
             numberOfOutputs: 1,
             outputChannelCount: [2],
           })
+          // Chain input feeds the worklet so live-mode grains see the
+          // processed upstream signal, not the raw source.
+          input.connect(freezeNode)
           freezeNode.connect(freezeMixGain)
         } catch (e) {
           console.error('[useVoice] freeze worklet construction failed', e)
@@ -1340,13 +1356,13 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
       delayActive, delayTime, delayFb, wet,
       reverbActive, reverbSize, reverbWet, reverbIRPoolId,
       granActive, granSize, granDensity, granPos, granDrift, granSpray,
-      granPitch, granPitchSpread, granGain, granConstQ, granCQBands, granCQResonance,
+      granPitch, granPitchSpread, granGain, granConstQ, granCQBands, granCQResonance, granMode,
       dopplerActive, dopplerSpeed, dopplerRange, dopplerMinDist, dopplerMix,
       bandDopplerActive, bandDopplerBands, bandDopplerSpeed, bandDopplerSpread,
       bandDopplerPanWidth, bandDopplerDistance, bandDopplerGain, bandDopplerMix,
       bandReverbActive, bandReverbBands, bandReverbSize, bandReverbSpread,
       bandReverbDecay, bandReverbGain, bandReverbMix,
-      freezeActive, freezePos, freezeGrain, freezeMix, freezeGainVal, freezePitch, freezeVoices, freezePhase,
+      freezeActive, freezeMode, freezePos, freezeGrain, freezeMix, freezeGainVal, freezePitch, freezeVoices, freezePhase,
       stutterActive, stutterMode, stutterStartCycle, stutterEndCycle, stutterRepeats, stutterAutoRate, stutterMix,
       stutterPitchActive, stutterStartPitch, stutterEndPitch, stutterAmpShape, stutterJitter, stutterCurveShape, stutterShapeRandom,
       effectOrder,
@@ -1371,7 +1387,7 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
     bandDopplerPanWidth, bandDopplerDistance, bandDopplerGain, bandDopplerMix,
     bandReverbActive, bandReverbBands, bandReverbSize, bandReverbSpread,
     bandReverbDecay, bandReverbGain, bandReverbMix,
-    freezeActive, freezePos, freezeGrain, freezeMix, freezeGainVal, freezePitch, freezeVoices, freezePhase,
+    freezeActive, freezeMode, freezePos, freezeGrain, freezeMix, freezeGainVal, freezePitch, freezeVoices, freezePhase,
     stutterActive, stutterMode, stutterStartCycle, stutterEndCycle, stutterRepeats, stutterAutoRate, stutterMix,
     stutterPitchActive, stutterStartPitch, stutterEndPitch, stutterAmpShape, stutterJitter, stutterCurveShape, stutterShapeRandom,
     effectOrder,
@@ -1549,7 +1565,8 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
   useEffect(() => {
     if (!nodesRef.current) return
     nodesRef.current.freezeMixGain.gain.value = freezeActive ? freezeMix : 0
-    if (nodesRef.current.freezeDry) nodesRef.current.freezeDry.gain.value = freezeActive ? (1 - freezeMix) : 1
+    // freezeDry stays at unity — chain-contract fix. Effect no longer cuts
+    // upstream when mix=1; the worklet output just sums on top.
   }, [freezeMix, freezeActive])
 
   // Per-effect output gain — sync state → nodes on any change.
@@ -1784,6 +1801,7 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
     setGranPos(d.granPos); setGranDrift(d.granDrift); setGranSpray(d.granSpray)
     setGranPitch(d.granPitch); setGranPitchSpread(d.granPitchSpread); setGranGain(d.granGain)
     setGranConstQ(d.granConstQ); setGranCQBands(d.granCQBands); setGranCQResonance(d.granCQResonance)
+    setGranMode(d.granMode ?? 'source')
     setDopplerActive(d.dopplerActive); setDopplerSpeed(d.dopplerSpeed)
     setDopplerRange(d.dopplerRange); setDopplerMinDist(d.dopplerMinDist); setDopplerMix(d.dopplerMix)
     setBandDopplerActive(d.bandDopplerActive); setBandDopplerBands(d.bandDopplerBands)
@@ -1794,7 +1812,7 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
     setBandReverbSize(d.bandReverbSize); setBandReverbSpread(d.bandReverbSpread)
     setBandReverbDecay(d.bandReverbDecay); setBandReverbGain(d.bandReverbGain)
     setBandReverbMix(d.bandReverbMix)
-    setFreezeActive(d.freezeActive); setFreezePos(d.freezePos); setFreezeGrain(d.freezeGrain)
+    setFreezeActive(d.freezeActive); setFreezeMode(d.freezeMode ?? 'source'); setFreezePos(d.freezePos); setFreezeGrain(d.freezeGrain)
     setFreezeMix(d.freezeMix); setFreezeGainVal(d.freezeGainVal); setFreezePitch(d.freezePitch)
     setFreezeVoices(d.freezeVoices); setFreezePhase(d.freezePhase)
     setStutterActive(d.stutterActive); setStutterMode(d.stutterMode)
@@ -1935,6 +1953,7 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
     granConstQ, setGranConstQ,
     granCQBands, setGranCQBands,
     granCQResonance, setGranCQResonance,
+    granMode, setGranMode,
     // doppler
     dopplerActive, setDopplerActive,
     dopplerSpeed, setDopplerSpeed,
@@ -1960,6 +1979,7 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
     bandReverbMix, setBandReverbMix,
     // freeze
     freezeActive, setFreezeActive,
+    freezeMode, setFreezeMode,
     freezePos, setFreezePos,
     freezeGrain, setFreezeGrain,
     freezeMix, setFreezeMix,
