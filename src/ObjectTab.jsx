@@ -3,7 +3,6 @@ import { useStore, makeTrack } from './state'
 import { Multitrack } from './Multitrack'
 import { SourcePicker } from './SourcePicker'
 import { ClipInspector } from './ClipInspector'
-import { WavesetPanel } from './WavesetPanel'
 import { renderArrangement, computeArrangementDuration, clipPlayLen } from './audio'
 
 export function ObjectTab() {
@@ -168,8 +167,6 @@ export function ObjectTab() {
           style={{ width: 80 }}
         />
       </div>
-
-      <WavesetPanel />
 
       <SourcePicker onSend={onSend} tracks={tracks} />
 

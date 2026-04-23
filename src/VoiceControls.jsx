@@ -2,6 +2,7 @@ import React, { useRef, useState, useEffect, useLayoutEffect } from 'react'
 import { DEFAULT_MOD } from './modulation'
 import { useStore } from './state'
 import { themeColor } from './audio'
+import { WavesetPanel } from './WavesetPanel'
 
 // XY pad: waveform background, crosshair at (pos, grain), draggable
 function FreezeXY({ voice }) {
@@ -500,6 +501,7 @@ export function VoiceControls({ voice }) {
           <button className={sub === 'freeze' ? 'active' : ''} onClick={() => switchSub('freeze')}>Freeze</button>
           <button className={sub === 'motion' ? 'active' : ''} onClick={() => switchSub('motion')}>Motion</button>
           <button className={sub === 'space' ? 'active' : ''} onClick={() => switchSub('space')}>Space</button>
+          <button className={sub === 'offline' ? 'active' : ''} onClick={() => switchSub('offline')}>Offline</button>
           <button className={sub === 'loop' ? 'active' : ''} onClick={() => switchSub('loop')}>Loop</button>
         </div>
       </div>
@@ -871,6 +873,10 @@ export function VoiceControls({ voice }) {
             </Row>
             <div className="hint">splits signal into N bands · each band has its own reverb tail</div>
           </div>
+        </>}
+
+        {sub === 'offline' && <>
+          <WavesetPanel />
         </>}
 
         {sub === 'loop' && <>
