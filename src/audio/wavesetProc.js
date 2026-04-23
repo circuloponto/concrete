@@ -90,6 +90,7 @@ export function summarizePipeline(pipeline) {
       case 'envelope': return `env.${s.params?.shape || 'lin'}`
       case 'fractional': return `frac${((s.params?.fraction ?? 0.5) * 100 | 0)}`
       case 'power': return `pow${(s.params?.k ?? 1).toFixed(1)}`
+      case 'reshape': return `rsh${(s.params?.factor ?? 1).toFixed(2)}x`
       case 'average': return `avg${s.params?.n || 3}`
       case 'multiply': return 'mul'
       default: return s.op

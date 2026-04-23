@@ -362,6 +362,32 @@ function opAverage(channels, groups, n) {
   return out
 }
 
+function opReshape(channels, groups, factor, sampleRate) {
+  // Each group resampled to length * factor samples. Preserves group COUNT
+  // (so wavesets stay wavesets) but changes the sample count per waveset —
+  // this is Wishart's "transposition by reshaping": factor>1 pitches DOWN
+  // and lengthens, factor<1 pitches UP and compresses. Bounded by the 60s
+  // output cap.
+  const cap = Math.floor(MAX_OUTPUT_SEC * sampleRate)
+  const f = Math.max(0.1, Math.min(10, factor))
+  let totalOut = 0
+  for (const g of groups) totalOut += Math.max(1, Math.floor((g.end - g.start) * f))
+  totalOut = Math.min(totalOut, cap)
+  const out = allocChannels(channels.length, totalOut)
+  let wp = 0
+  for (const g of groups) {
+    const srcLen = g.end - g.start
+    if (srcLen <= 0) continue
+    const dstLen = Math.max(1, Math.floor(srcLen * f))
+    if (wp + dstLen > totalOut) break
+    for (let c = 0; c < channels.length; c++) {
+      resampleRange(channels[c], g.start, g.end, out[c], wp, dstLen)
+    }
+    wp += dstLen
+  }
+  return out
+}
+
 function opMultiply(channels, groups) {
   const out = allocChannels(channels.length, channels[0].length)
   for (let gi = 0; gi < groups.length; gi++) {
@@ -455,6 +481,10 @@ function runPipeline(initialChannels, sampleRate, lpCutoff, groupSize, steps, pr
         break
       case 'multiply':
         channels = opMultiply(channels, groups)
+        needsRedetect = true
+        break
+      case 'reshape':
+        channels = opReshape(channels, groups, params.factor ?? 1, sampleRate)
         needsRedetect = true
         break
       default:

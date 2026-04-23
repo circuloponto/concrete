@@ -4,10 +4,12 @@ import { processWavesets, summarizePipeline } from './audio/wavesetProc'
 
 // Default params per op. Used when "Add step" appends a new pipeline entry.
 const OP_DEFAULTS = {
+  // Clean family — rearrange / retime
   reverse: {},
   repeat: { n: 4 },
   omit: { keepEvery: 3 },
   shuffle: { windowSize: 8 },
+  // Distortion family — per-group shape alteration
   invert: {},
   harmonic: {},
   waveSub: { wave: 'saw' },
@@ -15,11 +17,26 @@ const OP_DEFAULTS = {
   envelope: { shape: 'linear' },
   fractional: { fraction: 0.5 },
   power: { k: 2 },
+  reshape: { factor: 0.5 },
+  // Distortion family — neighbor-interaction
   average: { n: 4 },
   multiply: {},
 }
 
-const OP_LIST = Object.keys(OP_DEFAULTS)
+const OP_FAMILIES = [
+  {
+    label: 'Clean — rearrange / retime',
+    ops: ['reverse', 'repeat', 'omit', 'shuffle'],
+  },
+  {
+    label: 'Distortion — per-group shape',
+    ops: ['invert', 'harmonic', 'waveSub', 'normalize', 'envelope', 'fractional', 'power', 'reshape'],
+  },
+  {
+    label: 'Distortion — neighbor interaction',
+    ops: ['average', 'multiply'],
+  },
+]
 
 const OP_LABELS = {
   reverse: 'Reverse',
@@ -33,6 +50,7 @@ const OP_LABELS = {
   envelope: 'Envelope',
   fractional: 'Fractional',
   power: 'Power / waveshape',
+  reshape: 'Reshape / transpose',
   average: 'Average neighbors',
   multiply: 'Multiply w/ next',
 }
@@ -111,6 +129,14 @@ function StepParams({ step, onChange }) {
           <span>{p.n ?? 4}</span>
         </label>
       )
+    case 'reshape':
+      return (
+        <label className="wv-param">
+          factor<input type="range" min="0.25" max="4" step="0.01" value={p.factor ?? 0.5}
+            onChange={e => set({ factor: +e.target.value })} />
+          <span>{(p.factor ?? 0.5).toFixed(2)}×</span>
+        </label>
+      )
     default:
       return null
   }
@@ -123,7 +149,7 @@ export function WavesetPanel() {
   const [lpOn, setLpOn] = useState(true)
   const [groupSize, setGroupSize] = useState(1)
   const [steps, setSteps] = useState([])
-  const [addOp, setAddOp] = useState(OP_LIST[0])
+  const [addOp, setAddOp] = useState('reverse')
   const [processing, setProcessing] = useState(false)
   const [progress, setProgress] = useState(0)
   const [status, setStatus] = useState('')
@@ -257,7 +283,13 @@ export function WavesetPanel() {
         <div className="wv-row">
           <label>Add step</label>
           <select value={addOp} onChange={e => setAddOp(e.target.value)}>
-            {OP_LIST.map(op => <option key={op} value={op}>{OP_LABELS[op]}</option>)}
+            {OP_FAMILIES.map(fam => (
+              <optgroup key={fam.label} label={fam.label}>
+                {fam.ops.map(op => (
+                  <option key={op} value={op}>{OP_LABELS[op]}</option>
+                ))}
+              </optgroup>
+            ))}
           </select>
           <button onClick={addStep}>+ Add</button>
           <div style={{ flex: 1 }} />
