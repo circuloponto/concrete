@@ -133,11 +133,16 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
 
   // stutter
   const [stutterActive, setStutterActive] = useState(initial.stutterActive ?? false)
-  const [stutterSlice, setStutterSlice] = useState(initial.stutterSlice ?? 0.1)
-  const [stutterRepeats, setStutterRepeats] = useState(initial.stutterRepeats ?? 6)
-  const [stutterCurve, setStutterCurve] = useState(initial.stutterCurve ?? 0)
-  const [stutterRandom, setStutterRandom] = useState(initial.stutterRandom ?? false)
+  const [stutterMode, setStutterMode] = useState(initial.stutterMode ?? 'auto')
+  const [stutterStartCycle, setStutterStartCycle] = useState(initial.stutterStartCycle ?? 0.2)
+  const [stutterEndCycle, setStutterEndCycle] = useState(initial.stutterEndCycle ?? 0.05)
+  const [stutterRepeats, setStutterRepeats] = useState(initial.stutterRepeats ?? 8)
+  const [stutterAutoRate, setStutterAutoRate] = useState(initial.stutterAutoRate ?? 1.5)
   const [stutterMix, setStutterMix] = useState(initial.stutterMix ?? 1)
+  const triggerStutter = useCallback(() => {
+    const node = nodesRef.current?.modules?.stutter?.stutterNode
+    if (node) node.port.postMessage({ type: 'trigger' })
+  }, [])
 
   // effect chain order
   const [effectOrder, setEffectOrder] = useState(() => {
@@ -1311,7 +1316,7 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
       bandReverbActive, bandReverbBands, bandReverbSize, bandReverbSpread,
       bandReverbDecay, bandReverbGain, bandReverbMix,
       freezeActive, freezePos, freezeGrain, freezeMix, freezeGainVal, freezePitch, freezeVoices, freezePhase,
-      stutterActive, stutterSlice, stutterRepeats, stutterCurve, stutterRandom, stutterMix,
+      stutterActive, stutterMode, stutterStartCycle, stutterEndCycle, stutterRepeats, stutterAutoRate, stutterMix,
       effectOrder,
       modulators,
     })
@@ -1334,7 +1339,7 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
     bandReverbActive, bandReverbBands, bandReverbSize, bandReverbSpread,
     bandReverbDecay, bandReverbGain, bandReverbMix,
     freezeActive, freezePos, freezeGrain, freezeMix, freezeGainVal, freezePitch, freezeVoices, freezePhase,
-    stutterActive, stutterSlice, stutterRepeats, stutterCurve, stutterRandom, stutterMix,
+    stutterActive, stutterMode, stutterStartCycle, stutterEndCycle, stutterRepeats, stutterAutoRate, stutterMix,
     effectOrder,
     modulators,
   ])
@@ -1521,12 +1526,13 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
     if (!node) return
     const p = node.parameters
     p.get('active').value = stutterActive ? 1 : 0
-    p.get('slice').value = stutterSlice
+    p.get('mode').value = stutterMode === 'manual' ? 1 : 0
+    p.get('startCycle').value = stutterStartCycle
+    p.get('endCycle').value = stutterEndCycle
     p.get('repeats').value = stutterRepeats
-    p.get('curve').value = stutterCurve
-    p.get('randomize').value = stutterRandom ? 1 : 0
+    p.get('autoRate').value = stutterAutoRate
     p.get('mix').value = stutterMix
-  }, [stutterActive, stutterSlice, stutterRepeats, stutterCurve, stutterRandom, stutterMix, nodesReadyV])
+  }, [stutterActive, stutterMode, stutterStartCycle, stutterEndCycle, stutterRepeats, stutterAutoRate, stutterMix, nodesReadyV])
   useEffect(() => {
     const n = nodesRef.current
     if (!n) return
@@ -1732,9 +1738,10 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
     setFreezeActive(d.freezeActive); setFreezePos(d.freezePos); setFreezeGrain(d.freezeGrain)
     setFreezeMix(d.freezeMix); setFreezeGainVal(d.freezeGainVal); setFreezePitch(d.freezePitch)
     setFreezeVoices(d.freezeVoices); setFreezePhase(d.freezePhase)
-    setStutterActive(d.stutterActive); setStutterSlice(d.stutterSlice)
-    setStutterRepeats(d.stutterRepeats); setStutterCurve(d.stutterCurve)
-    setStutterRandom(d.stutterRandom); setStutterMix(d.stutterMix)
+    setStutterActive(d.stutterActive); setStutterMode(d.stutterMode)
+    setStutterStartCycle(d.stutterStartCycle); setStutterEndCycle(d.stutterEndCycle)
+    setStutterRepeats(d.stutterRepeats); setStutterAutoRate(d.stutterAutoRate)
+    setStutterMix(d.stutterMix)
     setModulators({})
   }, [])
 
@@ -1898,11 +1905,13 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
     freezePhase, setFreezePhase,
     // stutter
     stutterActive, setStutterActive,
-    stutterSlice, setStutterSlice,
+    stutterMode, setStutterMode,
+    stutterStartCycle, setStutterStartCycle,
+    stutterEndCycle, setStutterEndCycle,
     stutterRepeats, setStutterRepeats,
-    stutterCurve, setStutterCurve,
-    stutterRandom, setStutterRandom,
+    stutterAutoRate, setStutterAutoRate,
     stutterMix, setStutterMix,
+    triggerStutter,
     // chain order
     effectOrder, setEffectOrder,
     // modulation

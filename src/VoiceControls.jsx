@@ -706,29 +706,60 @@ export function VoiceControls({ voice }) {
                 onClick={() => v.setStutterActive(!v.stutterActive)}
               >{v.stutterActive ? 'ON' : 'OFF'}</button>
             </h4>
+            <Row label="Mode" value={v.stutterMode === 'auto' ? 'auto' : 'manual'}>
+              <div style={{ display: 'flex', gap: 4 }}>
+                <button
+                  className={'tiny-toggle' + (v.stutterMode === 'auto' ? ' active' : '')}
+                  onClick={() => v.setStutterMode('auto')}
+                >AUTO</button>
+                <button
+                  className={'tiny-toggle' + (v.stutterMode === 'manual' ? ' active' : '')}
+                  onClick={() => v.setStutterMode('manual')}
+                >MANUAL</button>
+              </div>
+            </Row>
+            {v.stutterMode === 'manual' && (
+              <Row label="Trigger" value="">
+                <button
+                  className="stutter-trigger"
+                  onClick={() => v.triggerStutter()}
+                  disabled={!v.stutterActive}
+                  style={{ width: '100%', padding: '6px 0', fontWeight: 600 }}
+                >▶ FIRE BURST</button>
+              </Row>
+            )}
+            {v.stutterMode === 'auto' && (
+              <Row label="Rate" value={v.stutterAutoRate.toFixed(2)} unit="/s">
+                <Slider min={0.2} max={10} step={0.1} value={v.stutterAutoRate} onChange={v.setStutterAutoRate} />
+              </Row>
+            )}
             <Row
-              label="Slice"
-              value={v.stutterSlice >= 1 ? v.stutterSlice.toFixed(2) : Math.round(v.stutterSlice * 1000)}
-              unit={v.stutterSlice >= 1 ? 's' : 'ms'}
+              label="Start cycle"
+              value={Math.round(v.stutterStartCycle * 1000)}
+              unit="ms"
             >
-              <Slider min={0.02} max={0.5} step={0.005} value={v.stutterSlice} onChange={v.setStutterSlice} />
+              <Slider min={0.02} max={0.5} step={0.005} value={v.stutterStartCycle} onChange={v.setStutterStartCycle} />
+            </Row>
+            <Row
+              label="End cycle"
+              value={Math.round(v.stutterEndCycle * 1000)}
+              unit="ms"
+            >
+              <Slider min={0.02} max={0.5} step={0.005} value={v.stutterEndCycle} onChange={v.setStutterEndCycle} />
             </Row>
             <Row label="Repeats" value={v.stutterRepeats}>
               <Slider min={2} max={32} step={1} value={v.stutterRepeats} onChange={v.setStutterRepeats} />
             </Row>
-            <Row label="Curve" value={v.stutterCurve === 0 ? 'flat' : (v.stutterCurve > 0 ? `accel ${v.stutterCurve.toFixed(2)}` : `decel ${Math.abs(v.stutterCurve).toFixed(2)}`)}>
-              <Slider min={-1} max={1} step={0.01} value={v.stutterCurve} onChange={v.setStutterCurve} />
-            </Row>
             <Row label="Mix" value={fmtPct(v.stutterMix)}>
               <Slider min={0} max={1} step={0.01} value={v.stutterMix} onChange={v.setStutterMix} />
             </Row>
-            <Row label="Random" value={v.stutterRandom ? 'on' : 'off'}>
-              <button
-                className={'tiny-toggle' + (v.stutterRandom ? ' active' : '')}
-                onClick={() => v.setStutterRandom(!v.stutterRandom)}
-              >{v.stutterRandom ? 'RANDOMIZE' : 'FIXED'}</button>
-            </Row>
-            <div className="hint">each burst re-rolls repeats + curve when random is on · slice stays fixed</div>
+            <div className="hint">
+              {v.stutterStartCycle > v.stutterEndCycle + 0.003
+                ? 'accelerating — intervals shrink start → end'
+                : v.stutterStartCycle < v.stutterEndCycle - 0.003
+                  ? 'decelerating — intervals grow start → end'
+                  : 'flat — constant interval across the burst'}
+            </div>
           </div>
         </>}
 
