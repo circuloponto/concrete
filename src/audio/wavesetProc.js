@@ -65,11 +65,22 @@ export function processWavesets(ctx, buffer, pipeline, onProgress, resolveBuffer
     const steps = (pipeline.steps || []).map(step => {
       if (step.op !== 'morph') return step
       const sourceBId = step.params?.sourceBId
-      if (!sourceBId || !resolveBuffer) return step
+      if (!sourceBId) {
+        console.warn('[wavesetProc] morph step has no sourceBId — output will be source A unchanged')
+        return step
+      }
+      if (!resolveBuffer) {
+        console.warn('[wavesetProc] morph step but no resolveBuffer was supplied')
+        return step
+      }
       const bBuf = resolveBuffer(sourceBId)
-      if (!bBuf) return step
+      if (!bBuf) {
+        console.warn('[wavesetProc] morph sourceBId not found in pool:', sourceBId)
+        return step
+      }
       const bChannels = cloneBufferChannels(bBuf)
       for (const ch of bChannels) transfer.push(ch.buffer)
+      console.log('[wavesetProc] morph attaching sourceB:', sourceBId, 'channels:', bChannels.length, 'length:', bChannels[0].length)
       return { ...step, params: { ...step.params, sourceBChannels: bChannels } }
     })
     pending.set(id, {

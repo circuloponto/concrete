@@ -547,7 +547,10 @@ function runPipeline(initialChannels, sampleRate, lpCutoff, groupSize, steps, pr
         channels = opReshape(channels, groups, params.factor ?? 1, sampleRate)
         needsRedetect = true
         break
-      case 'morph':
+      case 'morph': {
+        const hasB = !!(params.sourceBChannels && params.sourceBChannels[0] && params.sourceBChannels[0].length > 0)
+        console.log('[wavesetProc.worker] morph step — sourceBChannels present:', hasB,
+          'curve:', params.curveShape, 'direction:', params.direction)
         channels = opMorph(
           channels, groups,
           params.sourceBChannels,
@@ -557,6 +560,7 @@ function runPipeline(initialChannels, sampleRate, lpCutoff, groupSize, steps, pr
         )
         needsRedetect = true
         break
+      }
       default:
         // Unknown op — skip.
         break
