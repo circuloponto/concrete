@@ -394,6 +394,16 @@ function opReshape(channels, groups, factor, sampleRate) {
   return out
 }
 
+// Warp u ∈ [0,1] → warped u by the requested curve shape. Mirrors the
+// shape taxonomy used elsewhere in the app (stutter.worklet, LFO panel)
+// but inlined here so the worker stays a single standalone module.
+function warpMorphU(u, shape) {
+  if (shape === 'geometric') return u * u                         // log-ish: slow start, fast finish
+  if (shape === 'exponential') return u * u * u                   // u^3: holds long, snaps hard at end
+  if (shape === 'scurve') return 0.5 - 0.5 * Math.cos(u * Math.PI)  // cosine ease: slow at both ends
+  return u                                                         // 'linear' (default)
+}
+
 // Waveset morph — probabilistic A→B interleave across the output duration.
 // For each output group g, compute warped-u ∈ [0,1] at position g/(N-1);
 // with probability u pick a group from sourceB (resampled to A's group
@@ -410,7 +420,7 @@ function opMorph(channels, groups, sourceBChannels, lpCutoff, groupSize, sampleR
   const reverse = direction === 'reverse'
   for (let g = 0; g < N; g++) {
     const u = N > 1 ? g / (N - 1) : 0
-    const warped = warpU(u, curveShape)
+    const warped = warpMorphU(u, curveShape)
     const t = reverse ? 1 - warped : warped
     const srcGroup = groups[g]
     const srcLen = srcGroup.end - srcGroup.start
