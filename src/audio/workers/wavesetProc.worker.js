@@ -418,6 +418,8 @@ function opMorph(channels, groups, sourceBChannels, lpCutoff, groupSize, sampleR
   const out = allocChannels(numCh, totalLen)
   const N = groups.length
   const reverse = direction === 'reverse'
+  let bCount = 0, aCount = 0
+  console.log('[opMorph] A groups:', N, 'B groups:', bGroups.length, 'totalLen:', totalLen, 'curveShape:', curveShape, 'direction:', direction)
   for (let g = 0; g < N; g++) {
     const u = N > 1 ? g / (N - 1) : 0
     const warped = warpMorphU(u, curveShape)
@@ -426,6 +428,7 @@ function opMorph(channels, groups, sourceBChannels, lpCutoff, groupSize, sampleR
     const srcLen = srcGroup.end - srcGroup.start
     if (srcLen <= 0) continue
     const pickB = Math.random() < t
+    if (pickB) bCount++; else aCount++
     if (pickB) {
       const bg = bGroups[g % bGroups.length]
       const bLen = bg.end - bg.start
@@ -445,6 +448,14 @@ function opMorph(channels, groups, sourceBChannels, lpCutoff, groupSize, sampleR
       }
     }
   }
+  console.log('[opMorph] done — picked A:', aCount, 'picked B:', bCount, '/', N)
+  // Sanity: compare a few samples to know if out actually differs from channels.
+  let diffCount = 0
+  const sampleCount = Math.min(totalLen, 10000)
+  for (let i = 0; i < sampleCount; i++) {
+    if (out[0][i] !== channels[0][i]) diffCount++
+  }
+  console.log('[opMorph] out vs A differs in', diffCount, 'of first', sampleCount, 'samples')
   return out
 }
 
