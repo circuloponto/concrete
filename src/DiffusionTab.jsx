@@ -335,8 +335,9 @@ export function DiffusionTab() {
       }
       const phi = phaseRef.current
       s.sphereGroup.rotation.y = phi
-      // OrbitControls only active outside draw mode + when not voice-dragging
-      s.controls.enabled = !drawModeRef.current && draggingRef.current === null
+      // Keep camera zoom (wheel) always available; rotate is disabled while
+      // drawing or dragging a voice so dragging doesn't orbit the camera.
+      s.controls.enableRotate = !drawModeRef.current && draggingRef.current === null
       s.controls.update()
 
       const a = audioRef.current
@@ -383,18 +384,20 @@ export function DiffusionTab() {
     return () => cancelAnimationFrame(raf)
   }, [])
 
-  // ---- wheel: in draw mode, mouse wheel scrubs depth (otherwise OrbitControls zooms) ----
+  // ---- keyboard: Up/Down arrows scrub depth while in Draw mode.
+  // Wheel stays reserved for OrbitControls' camera zoom at all times.
   useEffect(() => {
-    const el = containerRef.current
-    if (!el) return
     const handler = (e) => {
       if (!drawModeRef.current) return
+      const t = e.target
+      if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA')) return
+      if (e.key !== 'ArrowUp' && e.key !== 'ArrowDown') return
       e.preventDefault()
-      const delta = -Math.sign(e.deltaY) * 0.05
+      const delta = e.key === 'ArrowUp' ? 0.05 : -0.05
       setDrawDepth(d => Math.max(0.1, Math.min(1, +(d + delta).toFixed(2))))
     }
-    el.addEventListener('wheel', handler, { passive: false })
-    return () => el.removeEventListener('wheel', handler)
+    window.addEventListener('keydown', handler)
+    return () => window.removeEventListener('keydown', handler)
   }, [])
 
   // ---- pointer / raycast helpers ----
