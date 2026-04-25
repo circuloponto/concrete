@@ -147,6 +147,81 @@ export const defaultVoice = () => ({
   modulators: {},
 })
 export const MAX_VOICES = 6
+
+// Default diffusion state: unit-vector positions on a unit sphere whose
+// rotation is the master temporal axis. Voices are evenly spread on the
+// equator. `radius` is the audio distance scaler (meters fed to Panner).
+function defaultDiffusion() {
+  return {
+    enabled: false,
+    radius: 4,
+    rotationPeriodSec: 8,
+    trajectories: [],
+    voices: Array.from({ length: MAX_VOICES }, (_, i) => {
+      const a = (i / MAX_VOICES) * Math.PI * 2 - Math.PI / 2
+      return {
+        position: { x: Math.sin(a), y: 0, z: Math.cos(a) },
+        phaseOffset: i / MAX_VOICES,
+        poolId: '',
+        trajectoryId: -1,
+      }
+    }),
+  }
+}
+
+function normalizeOrFront(p) {
+  const x = p?.x ?? 0, y = p?.y ?? 0, z = p?.z ?? 0
+  const len = Math.hypot(x, y, z)
+  if (len < 0.0001) return { x: 0, y: 0, z: 1 }
+  return { x: x / len, y: y / len, z: z / len }
+}
+
+// Migrate a persisted `diffusion` blob (possibly old 2D shape) into the
+// current 3D-sphere shape. Old voices `{x, y, z, orbit, trajectorySpeed}`
+// → `{position: unit-vector, phaseOffset}`. Old 2D trajectory points
+// `{x, z}` → projected to equator `{x, 0, z}`.
+function migrateDiffusion(d) {
+  if (!d) return defaultDiffusion()
+  const radius = d.radius ?? 4
+  const enabled = d.enabled ?? false
+  const rotationPeriodSec = d.rotationPeriodSec ?? 8
+  const voices = Array.from({ length: MAX_VOICES }, (_, i) => {
+    const v = d.voices?.[i] || {}
+    if (v.position && typeof v.position === 'object') {
+      return {
+        position: normalizeOrFront(v.position),
+        phaseOffset: v.phaseOffset ?? (i / MAX_VOICES),
+        poolId: v.poolId || '',
+        trajectoryId: typeof v.trajectoryId === 'number' ? v.trajectoryId : -1,
+      }
+    }
+    const x = v.x ?? 0, y = v.y ?? 0, z = v.z ?? 0
+    const len = Math.hypot(x, y, z)
+    const a = (i / MAX_VOICES) * Math.PI * 2 - Math.PI / 2
+    const position = len > 0.0001
+      ? { x: x / len, y: y / len, z: z / len }
+      : { x: Math.sin(a), y: 0, z: Math.cos(a) }
+    return {
+      position,
+      phaseOffset: i / MAX_VOICES,
+      poolId: v.poolId || '',
+      trajectoryId: typeof v.trajectoryId === 'number' ? v.trajectoryId : -1,
+    }
+  })
+  const trajectories = (d.trajectories || []).map(traj => {
+    if (!traj?.points || traj.points.length < 2) return null
+    const points = traj.points.map(p => {
+      if ('y' in p) return normalizeOrFront(p)
+      const len = Math.hypot(p.x ?? 0, p.z ?? 0)
+      if (len < 0.0001) return null
+      return { x: (p.x ?? 0) / len, y: 0, z: (p.z ?? 0) / len }
+    }).filter(Boolean)
+    if (points.length < 2) return null
+    return { points, name: traj.name }
+  }).filter(Boolean)
+  return { enabled, radius, rotationPeriodSec, voices, trajectories }
+}
+
 const defaultSoundState = () => ({
   focused: 1,
   voiceCount: 2,
@@ -165,14 +240,7 @@ export function StateProvider({ children }) {
   const [timeline, setTimeline] = useState({ tracks: Array.from({ length: 4 }, makeTrack), length: 60 })
   const [highlight, setHighlight] = useState('#00ff9c')
   const [theme, setTheme] = useState('dark')
-  const [diffusion, setDiffusion] = useState(() => ({
-    enabled: false,
-    radius: 12,
-    voices: Array.from({ length: MAX_VOICES }, (_, i) => {
-      const a = (i / MAX_VOICES) * Math.PI * 2 - Math.PI / 2
-      return { x: Math.sin(a) * 4, z: Math.cos(a) * 4, y: 0, orbit: 0, poolId: '', trajectoryId: -1, trajectorySpeed: 0.5 }
-    }),
-  }))
+  const [diffusion, setDiffusion] = useState(defaultDiffusion)
   const [soundState, setSoundState] = useState(defaultSoundState)
   const [ui, setUi] = useState(defaultUi)
   const [sessionVersion, setSessionVersion] = useState(0)
@@ -299,7 +367,7 @@ export function StateProvider({ children }) {
     })
     setHighlight(data.highlight || '#00ff9c')
     setTheme(data.theme === 'light' ? 'light' : 'dark')
-    if (data.diffusion) setDiffusion(prev => ({ ...prev, ...data.diffusion }))
+    if (data.diffusion) setDiffusion(migrateDiffusion(data.diffusion))
     // merge loaded voices with defaults so missing fields fall back
     const loadedSound = data.soundState || defaultSoundState()
     const merged = {

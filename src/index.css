@@ -1245,16 +1245,19 @@ input[type="color"] { padding: 0; width: 28px; height: 22px; border: 1px solid v
   gap: 16px;
   align-items: flex-start;
 }
-.diffusion-canvas {
+.diffusion-sphere {
   display: block;
   width: 520px;
   height: 520px;
   border: 1px solid var(--border);
   touch-action: none;
-  cursor: crosshair;
+  cursor: grab;
   flex-shrink: 0;
+  position: relative;
+  background: var(--panel-bg);
+  overflow: hidden;
 }
-.diffusion-canvas.drawing {
+.diffusion-sphere.drawing {
   cursor: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='20' height='20'%3E%3Ccircle cx='10' cy='10' r='4' fill='%2300ff9c'/%3E%3C/svg%3E") 10 10, crosshair;
   border-color: var(--hl);
 }
@@ -1271,7 +1274,7 @@ input[type="color"] { padding: 0; width: 28px; height: 22px; border: 1px solid v
 }
 @media (max-width: 1000px) {
   .diffusion-layout { flex-direction: column; }
-  .diffusion-canvas { width: 100%; height: auto; aspect-ratio: 1; }
+  .diffusion-sphere { width: 100%; height: auto; aspect-ratio: 1; }
   .diffusion-voices { max-height: none; flex-direction: row; overflow-x: auto; }
   .diffusion-voice-panel { flex: 0 0 260px; }
 }

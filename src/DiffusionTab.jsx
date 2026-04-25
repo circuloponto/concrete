@@ -1,49 +1,64 @@
 import { useRef, useEffect, useState, useCallback } from 'react'
+import * as THREE from 'three'
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js'
 import { useStore, MAX_VOICES } from './state'
-import { themeColor } from './audio'
 
-const SIZE = 520
-const CENTER = SIZE / 2
+const SPHERE_RADIUS = 1
+const MARKER_RADIUS = 0.06
+const DRAW_MIN_STEP = 0.04   // min angular step (chord length on unit sphere) between drawn points
+const MAX_LINE_PTS = 2000    // pre-allocated capacity for trajectory + drawing lines
 
-// Path helpers
-function pathLength(pts) {
+// 3D arc-length helpers
+function pathLength3(pts) {
   let len = 0
   for (let i = 1; i < pts.length; i++) {
-    const dx = pts[i].x - pts[i - 1].x, dz = pts[i].z - pts[i - 1].z
-    len += Math.sqrt(dx * dx + dz * dz)
+    const dx = pts[i].x - pts[i - 1].x
+    const dy = pts[i].y - pts[i - 1].y
+    const dz = pts[i].z - pts[i - 1].z
+    len += Math.sqrt(dx * dx + dy * dy + dz * dz)
   }
   return len
 }
-function samplePath(pts, t01) {
-  if (!pts || pts.length < 2) return pts?.[0] || { x: 0, z: 0 }
-  const total = pathLength(pts)
-  if (total < 0.001) return pts[0]
+function samplePath3(pts, t01) {
+  if (!pts || pts.length < 2) return pts?.[0] || { x: 0, y: 0, z: 1 }
+  const total = pathLength3(pts)
+  if (total < 0.0001) return pts[0]
   let target = (((t01 % 1) + 1) % 1) * total
   for (let i = 1; i < pts.length; i++) {
-    const dx = pts[i].x - pts[i - 1].x, dz = pts[i].z - pts[i - 1].z
-    const seg = Math.sqrt(dx * dx + dz * dz)
+    const dx = pts[i].x - pts[i - 1].x
+    const dy = pts[i].y - pts[i - 1].y
+    const dz = pts[i].z - pts[i - 1].z
+    const seg = Math.sqrt(dx * dx + dy * dy + dz * dz)
     if (target <= seg || i === pts.length - 1) {
       const f = seg > 0 ? target / seg : 0
-      return { x: pts[i - 1].x + dx * f, z: pts[i - 1].z + dz * f }
+      return { x: pts[i - 1].x + dx * f, y: pts[i - 1].y + dy * f, z: pts[i - 1].z + dz * f }
     }
     target -= seg
   }
   return pts[pts.length - 1]
 }
 
+function hexToInt(hex, fallback = 0x00ff9c) {
+  if (!hex || typeof hex !== 'string') return fallback
+  const m = hex.match(/#?([0-9a-fA-F]{6})/)
+  return m ? parseInt(m[1], 16) : fallback
+}
+
+const VOICE_COLORS = [0x00ff9c, 0xff6b6b, 0x4ecdc4, 0xffe66d, 0xa29bfe, 0xfd79a8]
+
 export function DiffusionTab() {
-  const { diffusion, setDiffusion, getAudioCtx, getBuffer, addPoolItem, pool, highlight, theme } = useStore()
-  const canvasRef = useRef(null)
-  const draggingRef = useRef(null)
-  const radius = diffusion.radius || 12
-  const trajectories = diffusion.trajectories || []
+  const { diffusion, setDiffusion, getAudioCtx, getBuffer, addPoolItem, pool, highlight } = useStore()
+  const containerRef = useRef(null)
   const [playing, setPlayingState] = useState(() => Array(MAX_VOICES).fill(false))
   const [recording, setRecording] = useState(false)
   const [drawMode, setDrawMode] = useState(false)
-  const [drawingPts, setDrawingPts] = useState(null)
+  const [drawDepth, setDrawDepth] = useState(1)
   const [captureName, setCaptureName] = useState('binaural')
+  const drawingPtsRef = useRef(null)        // [{x,y,z}, ...] world-space, while drawing
+  const draggingRef = useRef(null)          // index of voice being dragged
+  const drawDepthRef = useRef(drawDepth); drawDepthRef.current = drawDepth
 
-  // ---- audio engine ----
+  // ---- audio engine (HRTF panners + capture stream) ----
   const audioRef = useRef(null)
   const ensureAudio = useCallback(() => {
     if (audioRef.current) return audioRef.current
@@ -71,6 +86,8 @@ export function DiffusionTab() {
     try { audioRef.current.mixer.disconnect() } catch {}
     audioRef.current = null
   }, [])
+
+  const diffRef = useRef(diffusion); diffRef.current = diffusion
 
   const playVoice = (i, overridePoolId) => {
     const a = ensureAudio()
@@ -110,149 +127,387 @@ export function DiffusionTab() {
   }
   const stopRecord = () => { if (recRef.current) { recRef.current.stop(); recRef.current = null }; setRecording(false) }
 
-  // ---- rAF: positions + trajectories + orbits ----
-  const diffRef = useRef(diffusion); diffRef.current = diffusion
-  const trajTRef = useRef(Array(MAX_VOICES).fill(0)) // per-voice trajectory progress
+  // ---- THREE.js scene ----
+  const sceneRef = useRef(null)
+
+  useEffect(() => {
+    const container = containerRef.current
+    if (!container) return
+
+    const scene = new THREE.Scene()
+    const camera = new THREE.PerspectiveCamera(45, 1, 0.1, 100)
+    camera.position.set(1.7, 1.3, 2.6)
+    camera.lookAt(0, 0, 0)
+
+    const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true })
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2))
+    renderer.setClearColor(0x000000, 0)
+    container.appendChild(renderer.domElement)
+    renderer.domElement.style.display = 'block'
+    renderer.domElement.style.width = '100%'
+    renderer.domElement.style.height = '100%'
+
+    // rotating group: sphere mesh + trajectory lines + trajectory voice markers
+    const sphereGroup = new THREE.Group()
+    scene.add(sphereGroup)
+
+    // Invisible sphere mesh — raycast target only, no rendered surface.
+    const sphereGeom = new THREE.SphereGeometry(SPHERE_RADIUS, 48, 32)
+    const sphereMat = new THREE.MeshBasicMaterial({ visible: false })
+    const sphereMesh = new THREE.Mesh(sphereGeom, sphereMat)
+    sphereGroup.add(sphereMesh)
+
+    // Three orthogonal rings (equator + two meridians) provide orientation
+    // while the sphere spins, without any filled surface.
+    const ringMat = new THREE.LineBasicMaterial({ color: 0x88ffcc, transparent: true, opacity: 0.35 })
+    const mkRing = (axis) => {
+      const pts = []
+      for (let i = 0; i <= 96; i++) {
+        const a = (i / 96) * Math.PI * 2
+        if (axis === 'y')      pts.push(new THREE.Vector3(Math.sin(a), 0, Math.cos(a)))
+        else if (axis === 'x') pts.push(new THREE.Vector3(0, Math.sin(a), Math.cos(a)))
+        else                   pts.push(new THREE.Vector3(Math.sin(a), Math.cos(a), 0))
+      }
+      return new THREE.BufferGeometry().setFromPoints(pts)
+    }
+    const equatorGeom = mkRing('y')
+    const meridianGeom = mkRing('x')
+    const meridian2Geom = mkRing('z')
+    sphereGroup.add(new THREE.Line(equatorGeom, ringMat))
+    sphereGroup.add(new THREE.Line(meridianGeom, ringMat))
+    sphereGroup.add(new THREE.Line(meridian2Geom, ringMat))
+
+    // Cardinal intersection dots — the 6 axis points where pairs of rings
+    // meet (±X, ±Y, ±Z on the unit sphere). Helps eyeball orientation.
+    const dotGeom = new THREE.SphereGeometry(0.025, 12, 8)
+    const dotMat = new THREE.MeshBasicMaterial({ color: 0xffffff })
+    const axes = [[1,0,0],[-1,0,0],[0,1,0],[0,-1,0],[0,0,1],[0,0,-1]]
+    axes.forEach(([x, y, z]) => {
+      const m = new THREE.Mesh(dotGeom, dotMat)
+      m.position.set(x, y, z)
+      sphereGroup.add(m)
+    })
+
+    // listener marker at world origin (does NOT rotate)
+    const listenerGeom = new THREE.SphereGeometry(0.05, 16, 12)
+    const listenerMat = new THREE.MeshBasicMaterial({ color: 0xffffff })
+    const listenerMesh = new THREE.Mesh(listenerGeom, listenerMat)
+    scene.add(listenerMesh)
+
+    // OrbitControls — user drags empty space to rotate the camera and
+    // see/draw on any hemisphere. Auto-disabled while in draw mode.
+    const controls = new OrbitControls(camera, renderer.domElement)
+    controls.enablePan = false
+    controls.enableZoom = true
+    controls.minDistance = 1.6
+    controls.maxDistance = 6
+    controls.rotateSpeed = 0.7
+    controls.zoomSpeed = 0.6
+    controls.enableDamping = true
+    controls.dampingFactor = 0.12
+
+    sceneRef.current = {
+      scene, camera, renderer, sphereGroup, sphereMesh, controls,
+      raycaster: new THREE.Raycaster(),
+      ndc: new THREE.Vector2(),
+      voiceMarkers: [],
+      trajectoryLines: [],
+      drawingLine: null,
+      disposers: [
+        () => { sphereGeom.dispose(); sphereMat.dispose() },
+        () => { equatorGeom.dispose(); meridianGeom.dispose(); meridian2Geom.dispose(); ringMat.dispose() },
+        () => { listenerGeom.dispose(); listenerMat.dispose() },
+        () => { dotGeom.dispose(); dotMat.dispose() },
+        () => controls.dispose(),
+      ],
+    }
+
+    const resize = () => {
+      const w = container.clientWidth || 520
+      const h = container.clientHeight || 520
+      const size = Math.min(w, h)
+      renderer.setSize(size, size, false)
+      camera.aspect = 1
+      camera.updateProjectionMatrix()
+    }
+    resize()
+    const ro = new ResizeObserver(resize)
+    ro.observe(container)
+
+    return () => {
+      ro.disconnect()
+      const s = sceneRef.current
+      if (s) {
+        s.voiceMarkers.forEach(m => { m.geometry?.dispose(); m.material?.dispose() })
+        s.trajectoryLines.forEach(l => { l.geometry?.dispose(); l.material?.dispose() })
+        if (s.drawingLine) { s.drawingLine.geometry.dispose(); s.drawingLine.material.dispose() }
+        s.disposers.forEach(fn => { try { fn() } catch {} })
+        s.renderer.dispose()
+      }
+      try { container.removeChild(renderer.domElement) } catch {}
+      sceneRef.current = null
+    }
+  }, [])
+
+  // ---- sync THREE objects when state changes ----
+  useEffect(() => {
+    const s = sceneRef.current
+    if (!s) return
+    const hl = hexToInt(highlight)
+
+    // ensure marker count
+    while (s.voiceMarkers.length < MAX_VOICES) {
+      const i = s.voiceMarkers.length
+      const geom = new THREE.SphereGeometry(MARKER_RADIUS, 14, 10)
+      const mat = new THREE.MeshBasicMaterial({ color: VOICE_COLORS[i % VOICE_COLORS.length], depthTest: false })
+      const mesh = new THREE.Mesh(geom, mat)
+      mesh.renderOrder = 10
+      mesh.visible = false
+      s.scene.add(mesh)
+      s.voiceMarkers.push(mesh)
+    }
+
+    // All voice markers live in scene (world space). Trajectory voices are
+    // pinned to the +Z playhead direction at the path's current sample;
+    // the trajectory line itself rotates with sphereGroup, so the voice
+    // marker visually rides the now-time as the path slides past.
+    diffusion.voices.forEach((v, i) => {
+      const m = s.voiceMarkers[i]
+      m.visible = !!v.poolId
+      if (m.parent !== s.scene) { m.parent?.remove(m); s.scene.add(m) }
+    })
+
+    // sync trajectory lines — parented to scene (world space) so paths stay
+    // put while the sphere's orientation rings rotate as the time clock.
+    // Pre-allocated position buffer per line; we mutate in-place and bump
+    // setDrawRange instead of replacing attributes.
+    const trajs = diffusion.trajectories || []
+    while (s.trajectoryLines.length > trajs.length) {
+      const l = s.trajectoryLines.pop()
+      s.scene.remove(l)
+      l.geometry.dispose(); l.material.dispose()
+    }
+    while (s.trajectoryLines.length < trajs.length) {
+      const geom = new THREE.BufferGeometry()
+      const positions = new Float32Array(MAX_LINE_PTS * 3)
+      geom.setAttribute('position', new THREE.BufferAttribute(positions, 3))
+      geom.setDrawRange(0, 0)
+      const mat = new THREE.LineBasicMaterial({ color: hl, depthTest: false, transparent: true, opacity: 0.95 })
+      const line = new THREE.Line(geom, mat)
+      line.renderOrder = 5
+      s.scene.add(line)
+      s.trajectoryLines.push(line)
+    }
+    trajs.forEach((traj, ti) => {
+      const line = s.trajectoryLines[ti]
+      line.material.color.setHex(hl)
+      const pts = traj.points
+      const positions = line.geometry.attributes.position.array
+      const n = Math.min(pts.length, MAX_LINE_PTS)
+      for (let p = 0; p < n; p++) {
+        positions[p * 3]     = pts[p].x
+        positions[p * 3 + 1] = pts[p].y
+        positions[p * 3 + 2] = pts[p].z
+      }
+      line.geometry.attributes.position.needsUpdate = true
+      line.geometry.setDrawRange(0, n)
+      line.geometry.computeBoundingSphere()
+    })
+  }, [diffusion, highlight])
+
+  // ---- rAF loop: rotation phase, audio panners, render ----
+  const drawModeRef = useRef(drawMode); drawModeRef.current = drawMode
+  const phaseRef = useRef(0)
 
   useEffect(() => {
     let raf, last = performance.now()
     const tick = () => {
-      const now = performance.now(); const dt = (now - last) / 1000; last = now
+      const now = performance.now()
+      const dt = Math.min(0.05, (now - last) / 1000)
+      last = now
       const d = diffRef.current
-      if (!d) { raf = requestAnimationFrame(tick); return }
-      let changed = false
-      const newVoices = d.voices.map((v, i) => {
-        let nx = v.x, nz = v.z
-        const trajs = d.trajectories || []
-        const traj = v.trajectoryId >= 0 ? trajs[v.trajectoryId] : null
+      const s = sceneRef.current
+      if (!d || !s) { raf = requestAnimationFrame(tick); return }
+
+      const period = Math.max(0.5, d.rotationPeriodSec || 8)
+      if (!drawModeRef.current) {
+        phaseRef.current = (phaseRef.current + dt * (Math.PI * 2 / period)) % (Math.PI * 2)
+      }
+      const phi = phaseRef.current
+      s.sphereGroup.rotation.y = phi
+      // OrbitControls only active outside draw mode + when not voice-dragging
+      s.controls.enabled = !drawModeRef.current && draggingRef.current === null
+      s.controls.update()
+
+      const a = audioRef.current
+      d.voices.forEach((v, i) => {
+        const marker = s.voiceMarkers[i]
+        if (!marker || !marker.visible) return
+        let world
+        const traj = (v.trajectoryId >= 0 && v.trajectoryId < (d.trajectories?.length || 0))
+          ? d.trajectories[v.trajectoryId] : null
         if (traj && traj.points.length >= 2) {
-          trajTRef.current[i] += dt * (v.trajectorySpeed || 0.5) / Math.max(0.01, pathLength(traj.points))
-          const pos = samplePath(traj.points, trajTRef.current[i])
-          nx = pos.x; nz = pos.z
-          changed = true
-        } else if (v.orbit > 0) {
-          const dist = Math.sqrt(v.x * v.x + v.z * v.z) || 4
-          const angle = Math.atan2(v.x, v.z) + dt * v.orbit * Math.PI * 2
-          nx = Math.sin(angle) * dist; nz = Math.cos(angle) * dist
-          changed = true
+          // Voice rides the now-time: world-space position is the path
+          // sample at the current rotation phase, with no extra rotation.
+          // The trajectory line is parented to sphereGroup and spins, so
+          // visually the line slides past while the marker stays at the
+          // sampled point.
+          const t = (((phi / (Math.PI * 2)) + (v.phaseOffset || 0)) % 1 + 1) % 1
+          world = samplePath3(traj.points, t)
+        } else if (v.position) {
+          world = v.position
         }
-        // update panner if audio engine is running
-        const a = audioRef.current
-        if (a?.voices[i]?.panner) a.voices[i].panner.setPosition(nx, v.y || 0, -nz)
-        if (nx !== v.x || nz !== v.z) return { ...v, x: nx, z: nz }
-        return v
+        if (world) marker.position.set(world.x, world.y, world.z)
+        if (a && world) a.voices[i].panner.setPosition(world.x * d.radius, world.y * d.radius, -world.z * d.radius)
       })
-      if (changed) setDiffusion(prev => ({ ...prev, voices: newVoices }))
+
+      // refresh in-progress drawing line buffer (mutate pre-allocated array)
+      if (drawingPtsRef.current && s.drawingLine) {
+        const pts = drawingPtsRef.current
+        const positions = s.drawingLine.geometry.attributes.position.array
+        const n = Math.min(pts.length, MAX_LINE_PTS)
+        for (let p = 0; p < n; p++) {
+          positions[p * 3]     = pts[p].x
+          positions[p * 3 + 1] = pts[p].y
+          positions[p * 3 + 2] = pts[p].z
+        }
+        s.drawingLine.geometry.attributes.position.needsUpdate = true
+        s.drawingLine.geometry.setDrawRange(0, n)
+        s.drawingLine.geometry.computeBoundingSphere()
+      }
+
+      s.renderer.render(s.scene, s.camera)
       raf = requestAnimationFrame(tick)
     }
     raf = requestAnimationFrame(tick)
     return () => cancelAnimationFrame(raf)
-  }, [setDiffusion])
+  }, [])
 
-  // ---- coordinate conversion ----
-  const w2c = (wx, wz) => ({ cx: CENTER + (wx / radius) * (CENTER - 30), cy: CENTER - (wz / radius) * (CENTER - 30) })
-  const c2w = (cx, cy) => ({ x: ((cx - CENTER) / (CENTER - 30)) * radius, z: -((cy - CENTER) / (CENTER - 30)) * radius })
-  const canvasXY = (e) => {
-    const r = canvasRef.current.getBoundingClientRect()
-    return { mx: (e.clientX - r.left) * (SIZE / r.width), my: (e.clientY - r.top) * (SIZE / r.height) }
-  }
-
-  // ---- canvas rendering ----
+  // ---- wheel: in draw mode, mouse wheel scrubs depth (otherwise OrbitControls zooms) ----
   useEffect(() => {
-    const c = canvasRef.current; if (!c) return
-    const ctx = c.getContext('2d')
-    const hl = highlight || '#00ff9c'
-    const bg = themeColor('panel-bg', '#050505'), dim = themeColor('dim', '#555')
-    let raf
-    const draw = () => {
-      ctx.clearRect(0, 0, SIZE, SIZE); ctx.fillStyle = bg; ctx.fillRect(0, 0, SIZE, SIZE)
-      // grid
-      for (let i = 1; i <= 5; i++) { const r = (i / 5) * (CENTER - 30); ctx.strokeStyle = dim + '33'; ctx.lineWidth = 1; ctx.beginPath(); ctx.arc(CENTER, CENTER, r, 0, Math.PI * 2); ctx.stroke() }
-      ctx.strokeStyle = dim + '22'; ctx.beginPath(); ctx.moveTo(CENTER, 20); ctx.lineTo(CENTER, SIZE - 20); ctx.moveTo(20, CENTER); ctx.lineTo(SIZE - 20, CENTER); ctx.stroke()
-      ctx.font = '9px monospace'; ctx.fillStyle = dim; ctx.textAlign = 'center'; ctx.fillText('front', CENTER, 16); ctx.fillText('back', CENTER, SIZE - 6)
-      ctx.textAlign = 'left'; ctx.fillText('L', 6, CENTER + 3); ctx.textAlign = 'right'; ctx.fillText('R', SIZE - 6, CENTER + 3)
-      // listener
-      ctx.fillStyle = hl; ctx.beginPath(); ctx.arc(CENTER, CENTER, 8, 0, Math.PI * 2); ctx.fill()
-      ctx.fillStyle = bg; ctx.beginPath(); ctx.arc(CENTER, CENTER, 5, 0, Math.PI * 2); ctx.fill()
-      // trajectories
-      const trajs = diffusion.trajectories || []
-      trajs.forEach((traj, ti) => {
-        if (!traj.points || traj.points.length < 2) return
-        ctx.strokeStyle = hl + '55'; ctx.lineWidth = 2; ctx.setLineDash([6, 4])
-        ctx.beginPath()
-        traj.points.forEach((p, j) => { const { cx, cy } = w2c(p.x, p.z); j === 0 ? ctx.moveTo(cx, cy) : ctx.lineTo(cx, cy) })
-        ctx.closePath(); ctx.stroke(); ctx.setLineDash([])
-        // label
-        const { cx, cy } = w2c(traj.points[0].x, traj.points[0].z)
-        ctx.fillStyle = hl + '88'; ctx.font = '8px monospace'; ctx.textAlign = 'left'
-        ctx.fillText(`P${ti + 1}`, cx + 4, cy - 4)
-      })
-      // drawing path preview
-      if (drawingPts && drawingPts.length > 1) {
-        ctx.strokeStyle = hl; ctx.lineWidth = 2.5
-        ctx.beginPath()
-        drawingPts.forEach((p, j) => { const { cx, cy } = w2c(p.x, p.z); j === 0 ? ctx.moveTo(cx, cy) : ctx.lineTo(cx, cy) })
-        ctx.stroke()
-      }
-      // voice dots
-      const colors = [hl, '#ff6b6b', '#4ecdc4', '#ffe66d', '#a29bfe', '#fd79a8']
-      diffusion.voices.forEach((v, i) => {
-        if (!v?.poolId) return
-        const { cx, cy } = w2c(v.x, v.z); const col = colors[i % colors.length]
-        if (v.orbit > 0 || v.trajectoryId >= 0) {
-          const dist = Math.sqrt(v.x * v.x + v.z * v.z)
-          const pr = (dist / radius) * (CENTER - 30)
-          if (v.orbit > 0 && v.trajectoryId < 0) { ctx.strokeStyle = col + '33'; ctx.setLineDash([4, 4]); ctx.beginPath(); ctx.arc(CENTER, CENTER, pr, 0, Math.PI * 2); ctx.stroke(); ctx.setLineDash([]) }
-        }
-        ctx.strokeStyle = col + '44'; ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(CENTER, CENTER); ctx.lineTo(cx, cy); ctx.stroke()
-        ctx.fillStyle = col; ctx.beginPath(); ctx.arc(cx, cy, 12, 0, Math.PI * 2); ctx.fill()
-        ctx.fillStyle = bg; ctx.font = 'bold 9px monospace'; ctx.textAlign = 'center'; ctx.fillText(`${i + 1}`, cx, cy + 3)
-        if (playing[i]) { ctx.strokeStyle = col; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(cx, cy, 15, 0, Math.PI * 2); ctx.stroke() }
-      })
-      if (!diffusion.enabled) { ctx.fillStyle = dim; ctx.font = '10px monospace'; ctx.textAlign = 'center'; ctx.fillText('BINAURAL OFF', CENTER, SIZE - 24) }
-      raf = requestAnimationFrame(draw)
+    const el = containerRef.current
+    if (!el) return
+    const handler = (e) => {
+      if (!drawModeRef.current) return
+      e.preventDefault()
+      const delta = -Math.sign(e.deltaY) * 0.05
+      setDrawDepth(d => Math.max(0.1, Math.min(1, +(d + delta).toFixed(2))))
     }
-    draw()
-    return () => cancelAnimationFrame(raf)
-  }, [diffusion, highlight, radius, theme, playing, drawingPts])
+    el.addEventListener('wheel', handler, { passive: false })
+    return () => el.removeEventListener('wheel', handler)
+  }, [])
 
-  // ---- pointer events: drag dots OR draw trajectories ----
-  const onDown = (e) => {
-    const { mx, my } = canvasXY(e)
+  // ---- pointer / raycast helpers ----
+  const setNDC = (e) => {
+    const s = sceneRef.current
+    if (!s) return false
+    const r = s.renderer.domElement.getBoundingClientRect()
+    if (r.width === 0 || r.height === 0) return false
+    s.ndc.x = ((e.clientX - r.left) / r.width) * 2 - 1
+    s.ndc.y = -((e.clientY - r.top) / r.height) * 2 + 1
+    return true
+  }
+
+  const raycastSphereWorld = () => {
+    const s = sceneRef.current
+    if (!s) return null
+    s.raycaster.setFromCamera(s.ndc, s.camera)
+    const hits = s.raycaster.intersectObject(s.sphereMesh, false)
+    if (!hits.length) return null
+    const p = hits[0].point
+    const len = Math.hypot(p.x, p.y, p.z) || 1
+    return { x: p.x / len, y: p.y / len, z: p.z / len }
+  }
+
+  const raycastVoiceMarker = () => {
+    const s = sceneRef.current
+    if (!s) return -1
+    s.raycaster.setFromCamera(s.ndc, s.camera)
+    const visible = s.voiceMarkers.filter(m => m.visible)
+    if (!visible.length) return -1
+    const hits = s.raycaster.intersectObjects(visible, false)
+    if (!hits.length) return -1
+    return s.voiceMarkers.indexOf(hits[0].object)
+  }
+
+  const onPointerDown = (e) => {
+    if (!setNDC(e)) return
     e.currentTarget.setPointerCapture(e.pointerId)
+    const s = sceneRef.current
+    if (!s) return
     if (drawMode) {
-      const { x, z } = c2w(mx, my)
-      setDrawingPts([{ x, z }])
+      const dir = raycastSphereWorld()
+      if (!dir) return
+      const d = drawDepthRef.current
+      drawingPtsRef.current = [{ x: dir.x * d, y: dir.y * d, z: dir.z * d }]
+      if (!s.drawingLine) {
+        const g = new THREE.BufferGeometry()
+        const positions = new Float32Array(MAX_LINE_PTS * 3)
+        g.setAttribute('position', new THREE.BufferAttribute(positions, 3))
+        g.setDrawRange(0, 0)
+        const m = new THREE.LineBasicMaterial({ color: hexToInt(highlight), depthTest: false, transparent: true, opacity: 0.95 })
+        s.drawingLine = new THREE.Line(g, m)
+        s.drawingLine.renderOrder = 6
+        s.scene.add(s.drawingLine)
+      }
       return
     }
-    const voices = diffusion.voices || []
-    for (let i = MAX_VOICES - 1; i >= 0; i--) {
-      const v = voices[i]; if (!v?.poolId) continue
-      const { cx, cy } = w2c(v.x, v.z)
-      if (Math.sqrt((mx - cx) ** 2 + (my - cy) ** 2) < 18) { draggingRef.current = i; return }
+    const idx = raycastVoiceMarker()
+    if (idx >= 0) {
+      const v = diffRef.current.voices[idx]
+      if (!v.trajectoryId || v.trajectoryId < 0) {
+        draggingRef.current = idx
+      }
     }
   }
-  const onMove = (e) => {
-    const { mx, my } = canvasXY(e)
-    if (drawMode && drawingPts) {
-      const { x, z } = c2w(mx, my)
-      const last = drawingPts[drawingPts.length - 1]
-      const dist = Math.sqrt((x - last.x) ** 2 + (z - last.z) ** 2)
-      if (dist > radius * 0.02) setDrawingPts(prev => [...prev, { x, z }])
+
+  const onPointerMove = (e) => {
+    if (!setNDC(e)) return
+    if (drawMode && drawingPtsRef.current) {
+      const dir = raycastSphereWorld()
+      if (!dir) return
+      const d = drawDepthRef.current
+      const next = { x: dir.x * d, y: dir.y * d, z: dir.z * d }
+      const last = drawingPtsRef.current[drawingPtsRef.current.length - 1]
+      const dx = next.x - last.x, dy = next.y - last.y, dz = next.z - last.z
+      if (Math.sqrt(dx * dx + dy * dy + dz * dz) > DRAW_MIN_STEP) {
+        drawingPtsRef.current.push(next)
+      }
       return
     }
-    if (draggingRef.current === null) return
-    const { x, z } = c2w(mx, my)
-    setDiffusion(prev => { const nv = prev.voices.slice(); nv[draggingRef.current] = { ...nv[draggingRef.current], x, z }; return { ...prev, voices: nv } })
+    if (draggingRef.current !== null) {
+      const i = draggingRef.current
+      const dir = raycastSphereWorld()
+      if (!dir) return
+      const d = drawDepthRef.current
+      const pos = { x: dir.x * d, y: dir.y * d, z: dir.z * d }
+      setDiffusion(prev => {
+        const nv = prev.voices.slice()
+        nv[i] = { ...nv[i], position: pos }
+        return { ...prev, voices: nv }
+      })
+    }
   }
-  const onUp = () => {
-    if (drawMode && drawingPts && drawingPts.length >= 2) {
-      setDiffusion(prev => ({
-        ...prev,
-        trajectories: [...(prev.trajectories || []), { points: drawingPts, name: `path ${(prev.trajectories?.length || 0) + 1}` }],
-      }))
-      setDrawingPts(null); setDrawMode(false)
-    } else { setDrawingPts(null) }
+
+  const onPointerUp = () => {
+    if (drawMode && drawingPtsRef.current) {
+      const pts = drawingPtsRef.current
+      const s = sceneRef.current
+      if (pts.length >= 2) {
+        setDiffusion(prev => ({
+          ...prev,
+          trajectories: [...(prev.trajectories || []), { points: pts, name: `path ${(prev.trajectories?.length || 0) + 1}` }],
+        }))
+      }
+      drawingPtsRef.current = null
+      if (s?.drawingLine) {
+        s.scene.remove(s.drawingLine)
+        s.drawingLine.geometry.dispose()
+        s.drawingLine.material.dispose()
+        s.drawingLine = null
+      }
+      setDrawMode(false)
+    }
     draggingRef.current = null
   }
 
@@ -271,6 +526,10 @@ export function DiffusionTab() {
     setDiffusion(prev => { const nv = prev.voices.slice(); nv[i] = { ...nv[i], [prop]: val }; return { ...prev, voices: nv } })
   }
 
+  const radius = diffusion.radius || 4
+  const rotationPeriodSec = diffusion.rotationPeriodSec || 8
+  const trajectories = diffusion.trajectories || []
+
   return (
     <div className="diffusion-tab">
       <div className="toolbar">
@@ -280,24 +539,40 @@ export function DiffusionTab() {
         <button onClick={playing.some(Boolean) ? stopAll : playAll}>{playing.some(Boolean) ? '■ Stop all' : '▶ Play all'}</button>
         <input type="text" value={captureName} onChange={e => setCaptureName(e.target.value)} placeholder="capture name" style={{ width: 120 }} />
         {!recording ? <button onClick={startRecord}>● Rec → pool</button> : <button className="recording" onClick={stopRecord}>Stop rec</button>}
-        <button className={drawMode ? 'active' : ''} onClick={() => { setDrawMode(!drawMode); setDrawingPts(null) }}>
+        <button className={drawMode ? 'active' : ''} onClick={() => {
+          drawingPtsRef.current = null
+          const s = sceneRef.current
+          if (s?.drawingLine) {
+            s.scene.remove(s.drawingLine)
+            s.drawingLine.geometry.dispose(); s.drawingLine.material.dispose()
+            s.drawingLine = null
+          }
+          setDrawMode(!drawMode)
+        }}>
           {drawMode ? '✎ Drawing...' : '✎ Draw path'}
         </button>
+        <label style={{ fontSize: 10, color: 'var(--dim)', textTransform: 'uppercase', letterSpacing: 1, marginLeft: 8 }}>Depth</label>
+        <input type="range" min="0.1" max="1" step="0.01" value={drawDepth} onChange={e => setDrawDepth(+e.target.value)} style={{ width: 70 }} />
+        <span style={{ color: 'var(--hl)', fontSize: 10 }}>{(drawDepth * 100).toFixed(0)}%</span>
+        <label style={{ fontSize: 10, color: 'var(--dim)', textTransform: 'uppercase', letterSpacing: 1, marginLeft: 8 }}>Period</label>
+        <input type="range" min="0.5" max="60" step="0.1" value={rotationPeriodSec} onChange={e => setDiffusion(prev => ({ ...prev, rotationPeriodSec: +e.target.value }))} style={{ width: 80 }} />
+        <span style={{ color: 'var(--hl)', fontSize: 10 }}>{rotationPeriodSec.toFixed(1)}s</span>
         <label style={{ fontSize: 10, color: 'var(--dim)', textTransform: 'uppercase', letterSpacing: 1, marginLeft: 8 }}>Radius</label>
-        <input type="range" min="2" max="50" step="0.5" value={radius} onChange={e => setDiffusion(prev => ({ ...prev, radius: +e.target.value }))} style={{ width: 80 }} />
+        <input type="range" min="1" max="50" step="0.5" value={radius} onChange={e => setDiffusion(prev => ({ ...prev, radius: +e.target.value }))} style={{ width: 80 }} />
         <span style={{ color: 'var(--hl)', fontSize: 10 }}>{radius}m</span>
         <span style={{ color: 'var(--dim)', fontSize: 10, marginLeft: 'auto' }}>headphones required</span>
       </div>
       <div className="diffusion-layout">
-        <canvas ref={canvasRef} width={SIZE} height={SIZE}
-          className={'diffusion-canvas' + (drawMode ? ' drawing' : '')}
-          onPointerDown={onDown} onPointerMove={onMove} onPointerUp={onUp} onPointerCancel={onUp}
+        <div ref={containerRef}
+          className={'diffusion-sphere' + (drawMode ? ' drawing' : '')}
+          onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp} onPointerCancel={onPointerUp}
         />
         <div className="diffusion-voices">
           {Array.from({ length: MAX_VOICES }).map((_, i) => {
             const v = diffusion.voices[i] || {}
-            const dist = Math.sqrt((v.x || 0) ** 2 + (v.z || 0) ** 2).toFixed(1)
-            const angle = ((Math.atan2(v.x || 0, v.z || 0) * 180 / Math.PI + 360) % 360).toFixed(0)
+            const pos = v.position || { x: 0, y: 0, z: 1 }
+            const lat = Math.asin(Math.max(-1, Math.min(1, pos.y))) * 180 / Math.PI
+            const lon = Math.atan2(pos.x, pos.z) * 180 / Math.PI
             return (
               <div key={i} className="panel diffusion-voice-panel">
                 <h4>Voice {i + 1}
@@ -311,34 +586,20 @@ export function DiffusionTab() {
                     {pool.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
                   </select>
                 </div>
-                <div className="row"><label>Dist / Az</label><span className="value">{dist}m · {angle}°</span></div>
-                <div className="row">
-                  <label>Elevation</label>
-                  <input className="slider" type="range" min="-10" max="10" step="0.1" value={v.y || 0} onChange={e => setVoiceProp(i, 'y', +e.target.value)} />
-                  <span className="value">{(v.y || 0).toFixed(1)}m</span>
-                </div>
+                <div className="row"><label>Lat / Lon</label><span className="value">{lat.toFixed(0)}° · {lon.toFixed(0)}°</span></div>
                 <div className="row">
                   <label>Path</label>
                   <select className="select-inline" value={v.trajectoryId ?? -1}
-                    onChange={e => { setVoiceProp(i, 'trajectoryId', +e.target.value); trajTRef.current[i] = 0 }}>
+                    onChange={e => setVoiceProp(i, 'trajectoryId', +e.target.value)}>
                     <option value={-1}>— none —</option>
                     {trajectories.map((t, ti) => <option key={ti} value={ti}>{t.name || `path ${ti + 1}`}</option>)}
                   </select>
                 </div>
-                {v.trajectoryId >= 0 && (
-                  <div className="row">
-                    <label>Speed</label>
-                    <input className="slider" type="range" min="0.1" max="10" step="0.1" value={v.trajectorySpeed || 0.5} onChange={e => setVoiceProp(i, 'trajectorySpeed', +e.target.value)} />
-                    <span className="value">{(v.trajectorySpeed || 0.5).toFixed(1)} m/s</span>
-                  </div>
-                )}
-                {v.trajectoryId < 0 && (
-                  <div className="row">
-                    <label>Orbit</label>
-                    <input className="slider" type="range" min="0" max="2" step="0.01" value={v.orbit || 0} onChange={e => setVoiceProp(i, 'orbit', +e.target.value)} />
-                    <span className="value">{(v.orbit || 0).toFixed(2)} Hz</span>
-                  </div>
-                )}
+                <div className="row">
+                  <label>Phase</label>
+                  <input className="slider" type="range" min="0" max="1" step="0.01" value={v.phaseOffset || 0} onChange={e => setVoiceProp(i, 'phaseOffset', +e.target.value)} />
+                  <span className="value">{((v.phaseOffset || 0) * 100).toFixed(0)}%</span>
+                </div>
               </div>
             )
           })}
