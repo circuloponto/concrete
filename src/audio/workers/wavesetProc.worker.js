@@ -449,7 +449,43 @@ function opMorph(channels, groups, sourceBChannels, lpCutoff, groupSize, sampleR
     }
   }
   console.log('[opMorph] done — picked A:', aCount, 'picked B:', bCount, '/', N)
-  // Sanity: compare a few samples to know if out actually differs from channels.
+
+  // Smooth boundaries between groups. Even though wavesets nominally end at
+  // zero-crossings, the sample AT the ZC index can be significantly non-zero
+  // (the first sample after crossing). On noisy or transient material, each
+  // A↔B swap puts a step change into the output — thousands of them per
+  // second, audible as a harsh noisy haze and stressful for downstream
+  // effects. A short linear ramp across the boundary sample replaces the
+  // step with a tiny glide.
+  const K = 32
+  for (let g = 1; g < N; g++) {
+    const p = groups[g].start
+    if (p - K < 0 || p + K > totalLen) continue
+    for (let c = 0; c < numCh; c++) {
+      const a = out[c][p - K]
+      const b = out[c][p + K]
+      for (let i = 0; i < 2 * K; i++) {
+        const t = i / (2 * K)
+        out[c][p - K + i] = a * (1 - t) + b * t
+      }
+    }
+  }
+
+  // Belt-and-suspenders: any NaN/Infinity in the output would poison every
+  // downstream audio node (ConvolverNode, DelayNode, anything with state
+  // that integrates its input). Clamp to [-1, 1]; replace non-finite with 0.
+  let badCount = 0
+  for (let c = 0; c < numCh; c++) {
+    const ch = out[c]
+    for (let i = 0; i < totalLen; i++) {
+      const v = ch[i]
+      if (!Number.isFinite(v)) { ch[i] = 0; badCount++ }
+      else if (v > 1) ch[i] = 1
+      else if (v < -1) ch[i] = -1
+    }
+  }
+  if (badCount > 0) console.warn('[opMorph] replaced', badCount, 'non-finite samples with 0')
+
   let diffCount = 0
   const sampleCount = Math.min(totalLen, 10000)
   for (let i = 0; i < sampleCount; i++) {
