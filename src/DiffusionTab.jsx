@@ -44,26 +44,18 @@ function hexToInt(hex, fallback = 0x00ff9c) {
   return m ? parseInt(m[1], 16) : fallback
 }
 
-// Build a ribbon mesh whose vertices are origin + N path points and whose
-// triangles fan from origin. Pre-allocated for MAX_LINE_PTS so we can mutate
-// in place each frame.
+// Build a ribbon = line-segments spokes from origin to each path point.
+// Each spoke is a vertex pair (origin, path[i]) packed into a flat array.
 function makeRibbon(color, opacity) {
   const geom = new THREE.BufferGeometry()
-  const positions = new Float32Array((MAX_LINE_PTS + 1) * 3)
+  const positions = new Float32Array(MAX_LINE_PTS * 2 * 3)
   geom.setAttribute('position', new THREE.BufferAttribute(positions, 3))
-  const indices = new Uint16Array((MAX_LINE_PTS - 1) * 3)
-  for (let i = 0; i < MAX_LINE_PTS - 1; i++) {
-    indices[i * 3]     = 0       // origin
-    indices[i * 3 + 1] = i + 1   // path[i]
-    indices[i * 3 + 2] = i + 2   // path[i+1]
-  }
-  geom.setIndex(new THREE.BufferAttribute(indices, 1))
   geom.setDrawRange(0, 0)
-  const mat = new THREE.MeshBasicMaterial({
-    color, side: THREE.DoubleSide, transparent: true, opacity,
+  const mat = new THREE.LineBasicMaterial({
+    color, transparent: true, opacity,
     depthTest: false, depthWrite: false,
   })
-  const mesh = new THREE.Mesh(geom, mat)
+  const mesh = new THREE.LineSegments(geom, mat)
   mesh.renderOrder = 4
   return mesh
 }
@@ -71,15 +63,16 @@ function makeRibbon(color, opacity) {
 function fillRibbon(ribbon, pts) {
   const positions = ribbon.geometry.attributes.position.array
   const n = Math.min(pts.length, MAX_LINE_PTS)
-  positions[0] = 0; positions[1] = 0; positions[2] = 0
-  for (let p = 0; p < n; p++) {
-    positions[(p + 1) * 3]     = pts[p].x
-    positions[(p + 1) * 3 + 1] = pts[p].y
-    positions[(p + 1) * 3 + 2] = pts[p].z
+  for (let i = 0; i < n; i++) {
+    positions[i * 6]     = 0
+    positions[i * 6 + 1] = 0
+    positions[i * 6 + 2] = 0
+    positions[i * 6 + 3] = pts[i].x
+    positions[i * 6 + 4] = pts[i].y
+    positions[i * 6 + 5] = pts[i].z
   }
   ribbon.geometry.attributes.position.needsUpdate = true
-  // Each adjacent pair of path points contributes one triangle (3 indices).
-  ribbon.geometry.setDrawRange(0, Math.max(0, (n - 1)) * 3)
+  ribbon.geometry.setDrawRange(0, n * 2) // 2 vertices per spoke
   ribbon.geometry.computeBoundingSphere()
 }
 
@@ -348,7 +341,7 @@ export function DiffusionTab() {
       line.renderOrder = 5
       s.scene.add(line)
       s.trajectoryLines.push(line)
-      const ribbon = makeRibbon(hl, 0.18)
+      const ribbon = makeRibbon(hl, 0.45)
       s.scene.add(ribbon)
       s.trajectoryRibbons.push(ribbon)
     }
@@ -445,19 +438,22 @@ export function DiffusionTab() {
   }, [])
 
   // ---- keyboard: Up/Down arrows scrub depth while in Draw mode.
-  // Wheel stays reserved for OrbitControls' camera zoom at all times.
+  // Capture-phase listener so it fires before OrbitControls or focused
+  // buttons can swallow the arrow keys.
   useEffect(() => {
     const handler = (e) => {
       if (!drawModeRef.current) return
-      const t = e.target
-      if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA')) return
       if (e.key !== 'ArrowUp' && e.key !== 'ArrowDown') return
+      const t = e.target
+      // Let the depth slider handle native arrow stepping when it has focus.
+      if (t && t.tagName === 'INPUT' && t.type === 'range') return
       e.preventDefault()
+      e.stopPropagation()
       const delta = e.key === 'ArrowUp' ? 0.05 : -0.05
       setDrawDepth(d => Math.max(0.1, Math.min(1, +(d + delta).toFixed(2))))
     }
-    window.addEventListener('keydown', handler)
-    return () => window.removeEventListener('keydown', handler)
+    window.addEventListener('keydown', handler, true)
+    return () => window.removeEventListener('keydown', handler, true)
   }, [])
 
   // ---- pointer / raycast helpers ----
@@ -514,7 +510,7 @@ export function DiffusionTab() {
         s.scene.add(s.drawingLine)
       }
       if (!s.drawingRibbon) {
-        s.drawingRibbon = makeRibbon(hexToInt(highlight), 0.22)
+        s.drawingRibbon = makeRibbon(hexToInt(highlight), 0.55)
         s.scene.add(s.drawingRibbon)
       }
       return
