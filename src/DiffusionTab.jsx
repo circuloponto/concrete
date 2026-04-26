@@ -46,17 +46,16 @@ function hexToInt(hex, fallback = 0x00ff9c) {
 
 // Build a ribbon = line-segments spokes from origin to each path point.
 // Each spoke is a vertex pair (origin, path[i]) packed into a flat array.
-function makeRibbon(color, opacity) {
+function makeRibbon(color, _opacity) {
   const geom = new THREE.BufferGeometry()
   const positions = new Float32Array(MAX_LINE_PTS * 2 * 3)
   geom.setAttribute('position', new THREE.BufferAttribute(positions, 3))
   geom.setDrawRange(0, 0)
-  const mat = new THREE.LineBasicMaterial({
-    color, transparent: true, opacity,
-    depthTest: false, depthWrite: false,
-  })
+  // Opaque, no depth flags — this matches the working ring + trajectory line
+  // setups, so the spokes should definitely render.
+  const mat = new THREE.LineBasicMaterial({ color })
   const mesh = new THREE.LineSegments(geom, mat)
-  mesh.renderOrder = 4
+  mesh.renderOrder = 7
   return mesh
 }
 
@@ -341,7 +340,7 @@ export function DiffusionTab() {
       line.renderOrder = 5
       s.scene.add(line)
       s.trajectoryLines.push(line)
-      const ribbon = makeRibbon(hl, 0.45)
+      const ribbon = makeRibbon(0xffffff, 1)
       s.scene.add(ribbon)
       s.trajectoryRibbons.push(ribbon)
     }
@@ -437,20 +436,23 @@ export function DiffusionTab() {
     return () => cancelAnimationFrame(raf)
   }, [])
 
-  // ---- keyboard: Up/Down arrows scrub depth while in Draw mode.
-  // Capture-phase listener so it fires before OrbitControls or focused
-  // buttons can swallow the arrow keys.
+  // ---- keyboard: Up/Down arrows scrub depth (always — not gated by draw
+  // mode). Capture-phase listener so it fires before any focused element
+  // swallows the keys. Logs to console so you can verify it fires.
   useEffect(() => {
     const handler = (e) => {
-      if (!drawModeRef.current) return
       if (e.key !== 'ArrowUp' && e.key !== 'ArrowDown') return
       const t = e.target
-      // Let the depth slider handle native arrow stepping when it has focus.
-      if (t && t.tagName === 'INPUT' && t.type === 'range') return
+      // Let range sliders / text inputs handle their own native step.
+      if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA')) return
       e.preventDefault()
       e.stopPropagation()
-      const delta = e.key === 'ArrowUp' ? 0.05 : -0.05
-      setDrawDepth(d => Math.max(0.1, Math.min(1, +(d + delta).toFixed(2))))
+      const delta = e.key === 'ArrowUp' ? 0.1 : -0.1
+      setDrawDepth(d => {
+        const next = Math.max(0.1, Math.min(1, +(d + delta).toFixed(2)))
+        console.log('[diffusion] depth', d.toFixed(2), '→', next.toFixed(2))
+        return next
+      })
     }
     window.addEventListener('keydown', handler, true)
     return () => window.removeEventListener('keydown', handler, true)
@@ -510,7 +512,7 @@ export function DiffusionTab() {
         s.scene.add(s.drawingLine)
       }
       if (!s.drawingRibbon) {
-        s.drawingRibbon = makeRibbon(hexToInt(highlight), 0.55)
+        s.drawingRibbon = makeRibbon(0xffff00, 1)
         s.scene.add(s.drawingRibbon)
       }
       return
