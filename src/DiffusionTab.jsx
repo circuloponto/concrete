@@ -44,6 +44,45 @@ function hexToInt(hex, fallback = 0x00ff9c) {
   return m ? parseInt(m[1], 16) : fallback
 }
 
+// Build a ribbon mesh whose vertices are origin + N path points and whose
+// triangles fan from origin. Pre-allocated for MAX_LINE_PTS so we can mutate
+// in place each frame.
+function makeRibbon(color, opacity) {
+  const geom = new THREE.BufferGeometry()
+  const positions = new Float32Array((MAX_LINE_PTS + 1) * 3)
+  geom.setAttribute('position', new THREE.BufferAttribute(positions, 3))
+  const indices = new Uint16Array((MAX_LINE_PTS - 1) * 3)
+  for (let i = 0; i < MAX_LINE_PTS - 1; i++) {
+    indices[i * 3]     = 0       // origin
+    indices[i * 3 + 1] = i + 1   // path[i]
+    indices[i * 3 + 2] = i + 2   // path[i+1]
+  }
+  geom.setIndex(new THREE.BufferAttribute(indices, 1))
+  geom.setDrawRange(0, 0)
+  const mat = new THREE.MeshBasicMaterial({
+    color, side: THREE.DoubleSide, transparent: true, opacity,
+    depthTest: false, depthWrite: false,
+  })
+  const mesh = new THREE.Mesh(geom, mat)
+  mesh.renderOrder = 4
+  return mesh
+}
+
+function fillRibbon(ribbon, pts) {
+  const positions = ribbon.geometry.attributes.position.array
+  const n = Math.min(pts.length, MAX_LINE_PTS)
+  positions[0] = 0; positions[1] = 0; positions[2] = 0
+  for (let p = 0; p < n; p++) {
+    positions[(p + 1) * 3]     = pts[p].x
+    positions[(p + 1) * 3 + 1] = pts[p].y
+    positions[(p + 1) * 3 + 2] = pts[p].z
+  }
+  ribbon.geometry.attributes.position.needsUpdate = true
+  // Each adjacent pair of path points contributes one triangle (3 indices).
+  ribbon.geometry.setDrawRange(0, Math.max(0, (n - 1)) * 3)
+  ribbon.geometry.computeBoundingSphere()
+}
+
 const VOICE_COLORS = [0x00ff9c, 0xff6b6b, 0x4ecdc4, 0xffe66d, 0xa29bfe, 0xfd79a8]
 
 export function DiffusionTab() {
@@ -70,11 +109,17 @@ export function DiffusionTab() {
       const panner = ctx.createPanner()
       panner.panningModel = 'HRTF'
       panner.distanceModel = 'linear'
-      panner.refDistance = 1; panner.maxDistance = 50; panner.rolloffFactor = 0.4
+      panner.refDistance = 1; panner.maxDistance = 50; panner.rolloffFactor = 0.0
       panner.coneInnerAngle = 360; panner.coneOuterAngle = 360; panner.coneOuterGain = 1
       panner.setPosition(0, 0, -1)
-      panner.connect(mixer)
-      return { panner, source: null }
+      // distGain after the panner gives audible proximity: small magnitude
+      // (near origin, the listener) → louder; magnitude 1 (sphere surface)
+      // → quieter. rAF tick writes gain.value each frame.
+      const distGain = ctx.createGain()
+      distGain.gain.value = 1
+      panner.connect(distGain)
+      distGain.connect(mixer)
+      return { panner, distGain, source: null }
     })
     audioRef.current = { ctx, mixer, msDest, voices }
     return audioRef.current
@@ -212,7 +257,9 @@ export function DiffusionTab() {
       ndc: new THREE.Vector2(),
       voiceMarkers: [],
       trajectoryLines: [],
+      trajectoryRibbons: [],
       drawingLine: null,
+      drawingRibbon: null,
       disposers: [
         () => { sphereGeom.dispose(); sphereMat.dispose() },
         () => { equatorGeom.dispose(); meridianGeom.dispose(); meridian2Geom.dispose(); ringMat.dispose() },
@@ -240,7 +287,9 @@ export function DiffusionTab() {
       if (s) {
         s.voiceMarkers.forEach(m => { m.geometry?.dispose(); m.material?.dispose() })
         s.trajectoryLines.forEach(l => { l.geometry?.dispose(); l.material?.dispose() })
+        s.trajectoryRibbons.forEach(r => { r.geometry?.dispose(); r.material?.dispose() })
         if (s.drawingLine) { s.drawingLine.geometry.dispose(); s.drawingLine.material.dispose() }
+        if (s.drawingRibbon) { s.drawingRibbon.geometry.dispose(); s.drawingRibbon.material.dispose() }
         s.disposers.forEach(fn => { try { fn() } catch {} })
         s.renderer.dispose()
       }
@@ -277,26 +326,31 @@ export function DiffusionTab() {
       if (m.parent !== s.scene) { m.parent?.remove(m); s.scene.add(m) }
     })
 
-    // sync trajectory lines — parented to scene (world space) so paths stay
-    // put while the sphere's orientation rings rotate as the time clock.
-    // Pre-allocated position buffer per line; we mutate in-place and bump
-    // setDrawRange instead of replacing attributes.
+    // sync trajectory lines + ribbons — parented to scene (world space) so
+    // paths stay put while the sphere's orientation rings rotate as the time
+    // clock. The ribbon is a translucent fan from origin (listener) out to
+    // each path vertex, so depth = ribbon length is visually obvious.
     const trajs = diffusion.trajectories || []
     while (s.trajectoryLines.length > trajs.length) {
       const l = s.trajectoryLines.pop()
       s.scene.remove(l)
       l.geometry.dispose(); l.material.dispose()
+      const r = s.trajectoryRibbons.pop()
+      if (r) { s.scene.remove(r); r.geometry.dispose(); r.material.dispose() }
     }
     while (s.trajectoryLines.length < trajs.length) {
-      const geom = new THREE.BufferGeometry()
-      const positions = new Float32Array(MAX_LINE_PTS * 3)
-      geom.setAttribute('position', new THREE.BufferAttribute(positions, 3))
-      geom.setDrawRange(0, 0)
-      const mat = new THREE.LineBasicMaterial({ color: hl, depthTest: false, transparent: true, opacity: 0.95 })
-      const line = new THREE.Line(geom, mat)
+      const lineGeom = new THREE.BufferGeometry()
+      const linePositions = new Float32Array(MAX_LINE_PTS * 3)
+      lineGeom.setAttribute('position', new THREE.BufferAttribute(linePositions, 3))
+      lineGeom.setDrawRange(0, 0)
+      const lineMat = new THREE.LineBasicMaterial({ color: hl, depthTest: false, transparent: true, opacity: 0.95 })
+      const line = new THREE.Line(lineGeom, lineMat)
       line.renderOrder = 5
       s.scene.add(line)
       s.trajectoryLines.push(line)
+      const ribbon = makeRibbon(hl, 0.18)
+      s.scene.add(ribbon)
+      s.trajectoryRibbons.push(ribbon)
     }
     trajs.forEach((traj, ti) => {
       const line = s.trajectoryLines[ti]
@@ -312,6 +366,10 @@ export function DiffusionTab() {
       line.geometry.attributes.position.needsUpdate = true
       line.geometry.setDrawRange(0, n)
       line.geometry.computeBoundingSphere()
+
+      const ribbon = s.trajectoryRibbons[ti]
+      ribbon.material.color.setHex(hl)
+      fillRibbon(ribbon, pts)
     })
   }, [diffusion, highlight])
 
@@ -348,21 +406,22 @@ export function DiffusionTab() {
         const traj = (v.trajectoryId >= 0 && v.trajectoryId < (d.trajectories?.length || 0))
           ? d.trajectories[v.trajectoryId] : null
         if (traj && traj.points.length >= 2) {
-          // Voice rides the now-time: world-space position is the path
-          // sample at the current rotation phase, with no extra rotation.
-          // The trajectory line is parented to sphereGroup and spins, so
-          // visually the line slides past while the marker stays at the
-          // sampled point.
           const t = (((phi / (Math.PI * 2)) + (v.phaseOffset || 0)) % 1 + 1) % 1
           world = samplePath3(traj.points, t)
         } else if (v.position) {
           world = v.position
         }
         if (world) marker.position.set(world.x, world.y, world.z)
-        if (a && world) a.voices[i].panner.setPosition(world.x * d.radius, world.y * d.radius, -world.z * d.radius)
+        if (a && world) {
+          a.voices[i].panner.setPosition(world.x * d.radius, world.y * d.radius, -world.z * d.radius)
+          // Magnitude-based proximity: near origin = louder, surface = quieter.
+          // 0.4 / (0.2 + mag) → mag 0.1 ≈ +2.5 dB, mag 0.5 ≈ -5 dB, mag 1.0 ≈ -10 dB.
+          const mag = Math.hypot(world.x, world.y, world.z)
+          a.voices[i].distGain.gain.value = Math.max(0.05, Math.min(2, 0.4 / (0.2 + mag)))
+        }
       })
 
-      // refresh in-progress drawing line buffer (mutate pre-allocated array)
+      // refresh in-progress drawing line + ribbon (mutate pre-allocated arrays)
       if (drawingPtsRef.current && s.drawingLine) {
         const pts = drawingPtsRef.current
         const positions = s.drawingLine.geometry.attributes.position.array
@@ -375,6 +434,7 @@ export function DiffusionTab() {
         s.drawingLine.geometry.attributes.position.needsUpdate = true
         s.drawingLine.geometry.setDrawRange(0, n)
         s.drawingLine.geometry.computeBoundingSphere()
+        if (s.drawingRibbon) fillRibbon(s.drawingRibbon, pts)
       }
 
       s.renderer.render(s.scene, s.camera)
@@ -453,6 +513,10 @@ export function DiffusionTab() {
         s.drawingLine.renderOrder = 6
         s.scene.add(s.drawingLine)
       }
+      if (!s.drawingRibbon) {
+        s.drawingRibbon = makeRibbon(hexToInt(highlight), 0.22)
+        s.scene.add(s.drawingRibbon)
+      }
       return
     }
     const idx = raycastVoiceMarker()
@@ -509,6 +573,12 @@ export function DiffusionTab() {
         s.drawingLine.material.dispose()
         s.drawingLine = null
       }
+      if (s?.drawingRibbon) {
+        s.scene.remove(s.drawingRibbon)
+        s.drawingRibbon.geometry.dispose()
+        s.drawingRibbon.material.dispose()
+        s.drawingRibbon = null
+      }
       setDrawMode(false)
     }
     draggingRef.current = null
@@ -549,6 +619,11 @@ export function DiffusionTab() {
             s.scene.remove(s.drawingLine)
             s.drawingLine.geometry.dispose(); s.drawingLine.material.dispose()
             s.drawingLine = null
+          }
+          if (s?.drawingRibbon) {
+            s.scene.remove(s.drawingRibbon)
+            s.drawingRibbon.geometry.dispose(); s.drawingRibbon.material.dispose()
+            s.drawingRibbon = null
           }
           setDrawMode(!drawMode)
         }}>
