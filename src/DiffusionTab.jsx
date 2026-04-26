@@ -57,6 +57,10 @@ export function DiffusionTab() {
   const drawingPtsRef = useRef(null)        // [{x,y,z}, ...] world-space, while drawing
   const draggingRef = useRef(null)          // index of voice being dragged
   const drawDepthRef = useRef(drawDepth); drawDepthRef.current = drawDepth
+  // Per-stroke depth: starts at 1 on pointer down, wheel modulates during
+  // the stroke, each new point's magnitude = strokeDepthRef.current. The
+  // slider is a separate global scale applied at render time on top.
+  const strokeDepthRef = useRef(1)
 
   // ---- audio engine (HRTF panners + capture stream) ----
   const audioRef = useRef(null)
@@ -402,18 +406,19 @@ export function DiffusionTab() {
     return () => cancelAnimationFrame(raf)
   }, [])
 
-  // ---- wheel: scrubs depth ONLY while a draw stroke is in progress
-  // (mouse/finger held during a drag). Outside an active stroke the
-  // wheel event passes through to OrbitControls for camera zoom.
-  // Bound to window in capture phase so trackpad wheel events still
-  // route here while the canvas has pointer capture.
+  // ---- wheel during an active draw stroke: modulates strokeDepthRef so
+  // the path being drawn dives inward / out toward the surface in real
+  // time. The global slider is NOT touched. Outside a stroke, the wheel
+  // event flows to OrbitControls for camera zoom. Bound to window in
+  // capture phase so trackpad wheel events still route here while the
+  // canvas has pointer capture.
   useEffect(() => {
     const handler = (e) => {
       if (drawingPtsRef.current === null) return
       e.preventDefault()
       e.stopPropagation()
       const delta = -Math.sign(e.deltaY) * 0.05
-      setDrawDepth(d => Math.max(0.1, Math.min(1, +(d + delta).toFixed(2))))
+      strokeDepthRef.current = Math.max(0.1, Math.min(1, +(strokeDepthRef.current + delta).toFixed(2)))
     }
     window.addEventListener('wheel', handler, { passive: false, capture: true })
     return () => window.removeEventListener('wheel', handler, { capture: true })
@@ -460,7 +465,11 @@ export function DiffusionTab() {
     if (drawMode) {
       const dir = raycastSphereWorld()
       if (!dir) return
-      drawingPtsRef.current = [{ x: dir.x, y: dir.y, z: dir.z }]
+      // Reset per-stroke depth to surface; wheel during the stroke will
+      // dial it inward.
+      strokeDepthRef.current = 1
+      const sd = strokeDepthRef.current
+      drawingPtsRef.current = [{ x: dir.x * sd, y: dir.y * sd, z: dir.z * sd }]
       if (!s.drawingLine) {
         const g = new THREE.BufferGeometry()
         const positions = new Float32Array(MAX_LINE_PTS * 3)
@@ -487,7 +496,8 @@ export function DiffusionTab() {
     if (drawMode && drawingPtsRef.current) {
       const dir = raycastSphereWorld()
       if (!dir) return
-      const next = { x: dir.x, y: dir.y, z: dir.z }
+      const sd = strokeDepthRef.current
+      const next = { x: dir.x * sd, y: dir.y * sd, z: dir.z * sd }
       const last = drawingPtsRef.current[drawingPtsRef.current.length - 1]
       const dx = next.x - last.x, dy = next.y - last.y, dz = next.z - last.z
       if (Math.sqrt(dx * dx + dy * dy + dz * dz) > DRAW_MIN_STEP) {
