@@ -44,17 +44,17 @@ function hexToInt(hex, fallback = 0x00ff9c) {
   return m ? parseInt(m[1], 16) : fallback
 }
 
-// Build a ribbon = line-segments spokes from origin to each path point.
-// Each spoke is a vertex pair (origin, path[i]) packed into a flat array.
+// Build a ribbon = THREE.Line drawn as a zigzag (origin, path[0], origin,
+// path[1], origin, path[2], ...). The continuous polyline gives the same
+// visual as line segments — every other "edge" backtracks along an existing
+// spoke. THREE.Line is the same primitive as the working trajectory line.
 function makeRibbon(color, _opacity) {
   const geom = new THREE.BufferGeometry()
   const positions = new Float32Array(MAX_LINE_PTS * 2 * 3)
   geom.setAttribute('position', new THREE.BufferAttribute(positions, 3))
   geom.setDrawRange(0, 0)
-  // Opaque, no depth flags — this matches the working ring + trajectory line
-  // setups, so the spokes should definitely render.
   const mat = new THREE.LineBasicMaterial({ color })
-  const mesh = new THREE.LineSegments(geom, mat)
+  const mesh = new THREE.Line(geom, mat)
   mesh.renderOrder = 7
   return mesh
 }
@@ -225,6 +225,21 @@ export function DiffusionTab() {
       sphereGroup.add(m)
     })
 
+    // Depth-target rings — three orthogonal yellow rings parented to scene
+    // (don't rotate), scaled each frame by current drawDepth so the user
+    // sees the shell where the next pointer click would land. Only visible
+    // while Draw mode is on.
+    const depthGroup = new THREE.Group()
+    const depthMat = new THREE.LineBasicMaterial({ color: 0xffff00 })
+    const dEqGeom = mkRing('y')
+    const dM1Geom = mkRing('x')
+    const dM2Geom = mkRing('z')
+    depthGroup.add(new THREE.Line(dEqGeom, depthMat))
+    depthGroup.add(new THREE.Line(dM1Geom, depthMat))
+    depthGroup.add(new THREE.Line(dM2Geom, depthMat))
+    depthGroup.visible = false
+    scene.add(depthGroup)
+
     // listener marker at world origin (does NOT rotate)
     const listenerGeom = new THREE.SphereGeometry(0.05, 16, 12)
     const listenerMat = new THREE.MeshBasicMaterial({ color: 0xffffff })
@@ -244,7 +259,7 @@ export function DiffusionTab() {
     controls.dampingFactor = 0.12
 
     sceneRef.current = {
-      scene, camera, renderer, sphereGroup, sphereMesh, controls,
+      scene, camera, renderer, sphereGroup, sphereMesh, controls, depthGroup,
       raycaster: new THREE.Raycaster(),
       ndc: new THREE.Vector2(),
       voiceMarkers: [],
@@ -257,6 +272,7 @@ export function DiffusionTab() {
         () => { equatorGeom.dispose(); meridianGeom.dispose(); meridian2Geom.dispose(); ringMat.dispose() },
         () => { listenerGeom.dispose(); listenerMat.dispose() },
         () => { dotGeom.dispose(); dotMat.dispose() },
+        () => { dEqGeom.dispose(); dM1Geom.dispose(); dM2Geom.dispose(); depthMat.dispose() },
         () => controls.dispose(),
       ],
     }
@@ -389,6 +405,10 @@ export function DiffusionTab() {
       // drawing or dragging a voice so dragging doesn't orbit the camera.
       s.controls.enableRotate = !drawModeRef.current && draggingRef.current === null
       s.controls.update()
+      // Depth-target shell: visible while drawing, scaled to current depth.
+      const dd = drawDepthRef.current
+      s.depthGroup.visible = drawModeRef.current
+      s.depthGroup.scale.set(dd, dd, dd)
 
       const a = audioRef.current
       d.voices.forEach((v, i) => {
@@ -448,11 +468,7 @@ export function DiffusionTab() {
       e.preventDefault()
       e.stopPropagation()
       const delta = e.key === 'ArrowUp' ? 0.1 : -0.1
-      setDrawDepth(d => {
-        const next = Math.max(0.1, Math.min(1, +(d + delta).toFixed(2)))
-        console.log('[diffusion] depth', d.toFixed(2), '→', next.toFixed(2))
-        return next
-      })
+      setDrawDepth(d => Math.max(0.1, Math.min(1, +(d + delta).toFixed(2))))
     }
     window.addEventListener('keydown', handler, true)
     return () => window.removeEventListener('keydown', handler, true)
