@@ -44,37 +44,6 @@ function hexToInt(hex, fallback = 0x00ff9c) {
   return m ? parseInt(m[1], 16) : fallback
 }
 
-// Build a ribbon = THREE.Line drawn as a zigzag (origin, path[0], origin,
-// path[1], origin, path[2], ...). The continuous polyline gives the same
-// visual as line segments — every other "edge" backtracks along an existing
-// spoke. THREE.Line is the same primitive as the working trajectory line.
-function makeRibbon(color, _opacity) {
-  const geom = new THREE.BufferGeometry()
-  const positions = new Float32Array(MAX_LINE_PTS * 2 * 3)
-  geom.setAttribute('position', new THREE.BufferAttribute(positions, 3))
-  geom.setDrawRange(0, 0)
-  const mat = new THREE.LineBasicMaterial({ color })
-  const mesh = new THREE.Line(geom, mat)
-  mesh.renderOrder = 7
-  return mesh
-}
-
-function fillRibbon(ribbon, pts) {
-  const positions = ribbon.geometry.attributes.position.array
-  const n = Math.min(pts.length, MAX_LINE_PTS)
-  for (let i = 0; i < n; i++) {
-    positions[i * 6]     = 0
-    positions[i * 6 + 1] = 0
-    positions[i * 6 + 2] = 0
-    positions[i * 6 + 3] = pts[i].x
-    positions[i * 6 + 4] = pts[i].y
-    positions[i * 6 + 5] = pts[i].z
-  }
-  ribbon.geometry.attributes.position.needsUpdate = true
-  ribbon.geometry.setDrawRange(0, n * 2) // 2 vertices per spoke
-  ribbon.geometry.computeBoundingSphere()
-}
-
 const VOICE_COLORS = [0x00ff9c, 0xff6b6b, 0x4ecdc4, 0xffe66d, 0xa29bfe, 0xfd79a8]
 
 export function DiffusionTab() {
@@ -225,21 +194,12 @@ export function DiffusionTab() {
       sphereGroup.add(m)
     })
 
-    // Depth-target rings — three orthogonal yellow rings parented to scene
-    // (don't rotate), scaled each frame by current drawDepth so the user
-    // sees the shell where the next pointer click would land. Only visible
-    // while Draw mode is on.
-    const depthGroup = new THREE.Group()
-    const depthMat = new THREE.LineBasicMaterial({ color: 0xffff00 })
-    const dEqGeom = mkRing('y')
-    const dM1Geom = mkRing('x')
-    const dM2Geom = mkRing('z')
-    depthGroup.add(new THREE.Line(dEqGeom, depthMat))
-    depthGroup.add(new THREE.Line(dM1Geom, depthMat))
-    depthGroup.add(new THREE.Line(dM2Geom, depthMat))
-    // Always visible — the slider repositions the circle in real time.
-    depthGroup.visible = true
-    scene.add(depthGroup)
+    // pathsGroup holds trajectory lines + the in-progress drawing line.
+    // Stored points are unit vectors on the sphere; we set the group's
+    // scale = drawDepth each frame so the path repositions radially in
+    // real time as the slider moves.
+    const pathsGroup = new THREE.Group()
+    scene.add(pathsGroup)
 
     // listener marker at world origin (does NOT rotate)
     const listenerGeom = new THREE.SphereGeometry(0.05, 16, 12)
@@ -260,20 +220,17 @@ export function DiffusionTab() {
     controls.dampingFactor = 0.12
 
     sceneRef.current = {
-      scene, camera, renderer, sphereGroup, sphereMesh, controls, depthGroup,
+      scene, camera, renderer, sphereGroup, sphereMesh, controls, pathsGroup,
       raycaster: new THREE.Raycaster(),
       ndc: new THREE.Vector2(),
       voiceMarkers: [],
       trajectoryLines: [],
-      trajectoryRibbons: [],
       drawingLine: null,
-      drawingRibbon: null,
       disposers: [
         () => { sphereGeom.dispose(); sphereMat.dispose() },
         () => { equatorGeom.dispose(); meridianGeom.dispose(); meridian2Geom.dispose(); ringMat.dispose() },
         () => { listenerGeom.dispose(); listenerMat.dispose() },
         () => { dotGeom.dispose(); dotMat.dispose() },
-        () => { dEqGeom.dispose(); dM1Geom.dispose(); dM2Geom.dispose(); depthMat.dispose() },
         () => controls.dispose(),
       ],
     }
@@ -296,9 +253,7 @@ export function DiffusionTab() {
       if (s) {
         s.voiceMarkers.forEach(m => { m.geometry?.dispose(); m.material?.dispose() })
         s.trajectoryLines.forEach(l => { l.geometry?.dispose(); l.material?.dispose() })
-        s.trajectoryRibbons.forEach(r => { r.geometry?.dispose(); r.material?.dispose() })
         if (s.drawingLine) { s.drawingLine.geometry.dispose(); s.drawingLine.material.dispose() }
-        if (s.drawingRibbon) { s.drawingRibbon.geometry.dispose(); s.drawingRibbon.material.dispose() }
         s.disposers.forEach(fn => { try { fn() } catch {} })
         s.renderer.dispose()
       }
@@ -335,17 +290,14 @@ export function DiffusionTab() {
       if (m.parent !== s.scene) { m.parent?.remove(m); s.scene.add(m) }
     })
 
-    // sync trajectory lines + ribbons — parented to scene (world space) so
-    // paths stay put while the sphere's orientation rings rotate as the time
-    // clock. The ribbon is a translucent fan from origin (listener) out to
-    // each path vertex, so depth = ribbon length is visually obvious.
+    // sync trajectory lines — parented to pathsGroup whose scale tracks
+    // drawDepth, so the path is repositioned radially in real time as the
+    // slider moves. Stored points are unit vectors on the sphere surface.
     const trajs = diffusion.trajectories || []
     while (s.trajectoryLines.length > trajs.length) {
       const l = s.trajectoryLines.pop()
-      s.scene.remove(l)
+      s.pathsGroup.remove(l)
       l.geometry.dispose(); l.material.dispose()
-      const r = s.trajectoryRibbons.pop()
-      if (r) { s.scene.remove(r); r.geometry.dispose(); r.material.dispose() }
     }
     while (s.trajectoryLines.length < trajs.length) {
       const lineGeom = new THREE.BufferGeometry()
@@ -355,11 +307,8 @@ export function DiffusionTab() {
       const lineMat = new THREE.LineBasicMaterial({ color: hl, depthTest: false, transparent: true, opacity: 0.95 })
       const line = new THREE.Line(lineGeom, lineMat)
       line.renderOrder = 5
-      s.scene.add(line)
+      s.pathsGroup.add(line)
       s.trajectoryLines.push(line)
-      const ribbon = makeRibbon(0xffffff, 1)
-      s.scene.add(ribbon)
-      s.trajectoryRibbons.push(ribbon)
     }
     trajs.forEach((traj, ti) => {
       const line = s.trajectoryLines[ti]
@@ -375,10 +324,6 @@ export function DiffusionTab() {
       line.geometry.attributes.position.needsUpdate = true
       line.geometry.setDrawRange(0, n)
       line.geometry.computeBoundingSphere()
-
-      const ribbon = s.trajectoryRibbons[ti]
-      ribbon.material.color.setHex(hl)
-      fillRibbon(ribbon, pts)
     })
   }, [diffusion, highlight])
 
@@ -406,31 +351,31 @@ export function DiffusionTab() {
       // drawing or dragging a voice so dragging doesn't orbit the camera.
       s.controls.enableRotate = !drawModeRef.current && draggingRef.current === null
       s.controls.update()
-      // Depth-target shell: always visible, scaled to current depth, so the
-      // slider repositions the inner circle in real time.
+      // Scale paths radially in real time with the depth slider: stored
+      // points are unit vectors on the sphere surface, pathsGroup.scale
+      // pulls them inward toward the listener.
       const dd = drawDepthRef.current
-      s.depthGroup.scale.set(dd, dd, dd)
+      s.pathsGroup.scale.set(dd, dd, dd)
 
       const a = audioRef.current
       d.voices.forEach((v, i) => {
         const marker = s.voiceMarkers[i]
         if (!marker || !marker.visible) return
-        let world
+        let unit
         const traj = (v.trajectoryId >= 0 && v.trajectoryId < (d.trajectories?.length || 0))
           ? d.trajectories[v.trajectoryId] : null
         if (traj && traj.points.length >= 2) {
           const t = (((phi / (Math.PI * 2)) + (v.phaseOffset || 0)) % 1 + 1) % 1
-          world = samplePath3(traj.points, t)
+          unit = samplePath3(traj.points, t)
         } else if (v.position) {
-          world = v.position
+          unit = v.position
         }
-        if (world) marker.position.set(world.x, world.y, world.z)
-        if (a && world) {
-          a.voices[i].panner.setPosition(world.x * d.radius, world.y * d.radius, -world.z * d.radius)
-          // Magnitude-based proximity: near origin = louder, surface = quieter.
-          // 0.4 / (0.2 + mag) → mag 0.1 ≈ +2.5 dB, mag 0.5 ≈ -5 dB, mag 1.0 ≈ -10 dB.
-          const mag = Math.hypot(world.x, world.y, world.z)
-          a.voices[i].distGain.gain.value = Math.max(0.05, Math.min(2, 0.4 / (0.2 + mag)))
+        if (unit) marker.position.set(unit.x * dd, unit.y * dd, unit.z * dd)
+        if (a && unit) {
+          a.voices[i].panner.setPosition(unit.x * dd * d.radius, unit.y * dd * d.radius, -unit.z * dd * d.radius)
+          // Magnitude-based proximity: depth multiplier IS the magnitude
+          // (since stored vectors are unit). Closer to listener = louder.
+          a.voices[i].distGain.gain.value = Math.max(0.05, Math.min(2, 0.4 / (0.2 + dd)))
         }
       })
 
@@ -515,8 +460,7 @@ export function DiffusionTab() {
     if (drawMode) {
       const dir = raycastSphereWorld()
       if (!dir) return
-      const d = drawDepthRef.current
-      drawingPtsRef.current = [{ x: dir.x * d, y: dir.y * d, z: dir.z * d }]
+      drawingPtsRef.current = [{ x: dir.x, y: dir.y, z: dir.z }]
       if (!s.drawingLine) {
         const g = new THREE.BufferGeometry()
         const positions = new Float32Array(MAX_LINE_PTS * 3)
@@ -525,11 +469,7 @@ export function DiffusionTab() {
         const m = new THREE.LineBasicMaterial({ color: hexToInt(highlight), depthTest: false, transparent: true, opacity: 0.95 })
         s.drawingLine = new THREE.Line(g, m)
         s.drawingLine.renderOrder = 6
-        s.scene.add(s.drawingLine)
-      }
-      if (!s.drawingRibbon) {
-        s.drawingRibbon = makeRibbon(0xffff00, 1)
-        s.scene.add(s.drawingRibbon)
+        s.pathsGroup.add(s.drawingLine)
       }
       return
     }
@@ -547,8 +487,7 @@ export function DiffusionTab() {
     if (drawMode && drawingPtsRef.current) {
       const dir = raycastSphereWorld()
       if (!dir) return
-      const d = drawDepthRef.current
-      const next = { x: dir.x * d, y: dir.y * d, z: dir.z * d }
+      const next = { x: dir.x, y: dir.y, z: dir.z }
       const last = drawingPtsRef.current[drawingPtsRef.current.length - 1]
       const dx = next.x - last.x, dy = next.y - last.y, dz = next.z - last.z
       if (Math.sqrt(dx * dx + dy * dy + dz * dz) > DRAW_MIN_STEP) {
@@ -560,8 +499,7 @@ export function DiffusionTab() {
       const i = draggingRef.current
       const dir = raycastSphereWorld()
       if (!dir) return
-      const d = drawDepthRef.current
-      const pos = { x: dir.x * d, y: dir.y * d, z: dir.z * d }
+      const pos = { x: dir.x, y: dir.y, z: dir.z }
       setDiffusion(prev => {
         const nv = prev.voices.slice()
         nv[i] = { ...nv[i], position: pos }
@@ -582,16 +520,10 @@ export function DiffusionTab() {
       }
       drawingPtsRef.current = null
       if (s?.drawingLine) {
-        s.scene.remove(s.drawingLine)
+        s.pathsGroup.remove(s.drawingLine)
         s.drawingLine.geometry.dispose()
         s.drawingLine.material.dispose()
         s.drawingLine = null
-      }
-      if (s?.drawingRibbon) {
-        s.scene.remove(s.drawingRibbon)
-        s.drawingRibbon.geometry.dispose()
-        s.drawingRibbon.material.dispose()
-        s.drawingRibbon = null
       }
       setDrawMode(false)
     }
@@ -630,14 +562,9 @@ export function DiffusionTab() {
           drawingPtsRef.current = null
           const s = sceneRef.current
           if (s?.drawingLine) {
-            s.scene.remove(s.drawingLine)
+            s.pathsGroup.remove(s.drawingLine)
             s.drawingLine.geometry.dispose(); s.drawingLine.material.dispose()
             s.drawingLine = null
-          }
-          if (s?.drawingRibbon) {
-            s.scene.remove(s.drawingRibbon)
-            s.drawingRibbon.geometry.dispose(); s.drawingRibbon.material.dispose()
-            s.drawingRibbon = null
           }
           setDrawMode(!drawMode)
         }}>
