@@ -373,9 +373,11 @@ export function DiffusionTab() {
         if (pt) marker.position.set(pt.x, pt.y, pt.z)
         if (a && pt) {
           a.voices[i].panner.setPosition(pt.x * d.radius, pt.y * d.radius, -pt.z * d.radius)
-          // Magnitude-based proximity: closer to listener = louder.
-          const mag = Math.hypot(pt.x, pt.y, pt.z)
-          a.voices[i].distGain.gain.value = Math.max(0.05, Math.min(2, 0.4 / (0.2 + mag)))
+          // Inverse-square proximity: ~+9.5 dB at depth 0.1, ~-21 dB at
+          // depth 1.0 → ~30 dB swing between close and distant.
+          const mag = Math.max(0.0001, Math.hypot(pt.x, pt.y, pt.z))
+          const ratio = 0.3 / mag
+          a.voices[i].distGain.gain.value = Math.max(0.05, Math.min(3, ratio * ratio))
         }
       })
 
