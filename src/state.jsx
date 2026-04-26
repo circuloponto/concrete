@@ -162,6 +162,7 @@ function defaultDiffusion() {
       return {
         position: { x: Math.sin(a), y: 0, z: Math.cos(a) },
         phaseOffset: i / MAX_VOICES,
+        depth: 1,
         poolId: '',
         trajectoryId: -1,
       }
@@ -191,6 +192,7 @@ function migrateDiffusion(d) {
       return {
         position: normalizeOrFront(v.position),
         phaseOffset: v.phaseOffset ?? (i / MAX_VOICES),
+        depth: typeof v.depth === 'number' ? Math.max(0.1, Math.min(1, v.depth)) : 1,
         poolId: v.poolId || '',
         trajectoryId: typeof v.trajectoryId === 'number' ? v.trajectoryId : -1,
       }
@@ -204,6 +206,7 @@ function migrateDiffusion(d) {
     return {
       position,
       phaseOffset: i / MAX_VOICES,
+      depth: 1,
       poolId: v.poolId || '',
       trajectoryId: typeof v.trajectoryId === 'number' ? v.trajectoryId : -1,
     }

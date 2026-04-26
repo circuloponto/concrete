@@ -52,15 +52,9 @@ export function DiffusionTab() {
   const [playing, setPlayingState] = useState(() => Array(MAX_VOICES).fill(false))
   const [recording, setRecording] = useState(false)
   const [drawMode, setDrawMode] = useState(false)
-  const [drawDepth, setDrawDepth] = useState(1)
   const [captureName, setCaptureName] = useState('binaural')
-  const drawingPtsRef = useRef(null)        // [{x,y,z}, ...] world-space, while drawing
+  const drawingPtsRef = useRef(null)        // [{x,y,z}, ...] unit vectors on the sphere surface, while drawing
   const draggingRef = useRef(null)          // index of voice being dragged
-  const drawDepthRef = useRef(drawDepth); drawDepthRef.current = drawDepth
-  // Per-stroke depth: starts at 1 on pointer down, wheel modulates during
-  // the stroke, each new point's magnitude = strokeDepthRef.current. The
-  // slider is a separate global scale applied at render time on top.
-  const strokeDepthRef = useRef(1)
 
   // ---- audio engine (HRTF panners + capture stream) ----
   const audioRef = useRef(null)
@@ -256,7 +250,7 @@ export function DiffusionTab() {
       const s = sceneRef.current
       if (s) {
         s.voiceMarkers.forEach(m => { m.geometry?.dispose(); m.material?.dispose() })
-        s.trajectoryLines.forEach(l => { l.geometry?.dispose(); l.material?.dispose() })
+        s.trajectoryLines.forEach(l => { if (l) { l.geometry?.dispose(); l.material?.dispose() } })
         if (s.drawingLine) { s.drawingLine.geometry.dispose(); s.drawingLine.material.dispose() }
         s.disposers.forEach(fn => { try { fn() } catch {} })
         s.renderer.dispose()
@@ -294,40 +288,44 @@ export function DiffusionTab() {
       if (m.parent !== s.scene) { m.parent?.remove(m); s.scene.add(m) }
     })
 
-    // sync trajectory lines — parented to pathsGroup whose scale tracks
-    // drawDepth, so the path is repositioned radially in real time as the
-    // slider moves. Stored points are unit vectors on the sphere surface.
+    // sync trajectory tubes — paths render as 3D-looking TubeGeometry on
+    // the unit sphere, parented to pathsGroup. Visible only if at least
+    // one voice has its trajectoryId pointing here ("selected by a voice").
     const trajs = diffusion.trajectories || []
+    const trajsInUse = new Set()
+    diffusion.voices.forEach(v => {
+      if (typeof v.trajectoryId === 'number' && v.trajectoryId >= 0) trajsInUse.add(v.trajectoryId)
+    })
+
     while (s.trajectoryLines.length > trajs.length) {
       const l = s.trajectoryLines.pop()
       s.pathsGroup.remove(l)
-      l.geometry.dispose(); l.material.dispose()
+      l.geometry?.dispose(); l.material?.dispose()
     }
     while (s.trajectoryLines.length < trajs.length) {
-      const lineGeom = new THREE.BufferGeometry()
-      const linePositions = new Float32Array(MAX_LINE_PTS * 3)
-      lineGeom.setAttribute('position', new THREE.BufferAttribute(linePositions, 3))
-      lineGeom.setDrawRange(0, 0)
-      const lineMat = new THREE.LineBasicMaterial({ color: hl, depthTest: false, transparent: true, opacity: 0.95 })
-      const line = new THREE.Line(lineGeom, lineMat)
-      line.renderOrder = 5
-      s.pathsGroup.add(line)
-      s.trajectoryLines.push(line)
+      // Placeholder; actual geometry is built per path below.
+      s.trajectoryLines.push(null)
     }
     trajs.forEach((traj, ti) => {
-      const line = s.trajectoryLines[ti]
-      line.material.color.setHex(hl)
-      const pts = traj.points
-      const positions = line.geometry.attributes.position.array
-      const n = Math.min(pts.length, MAX_LINE_PTS)
-      for (let p = 0; p < n; p++) {
-        positions[p * 3]     = pts[p].x
-        positions[p * 3 + 1] = pts[p].y
-        positions[p * 3 + 2] = pts[p].z
+      const old = s.trajectoryLines[ti]
+      if (old) {
+        s.pathsGroup.remove(old)
+        old.geometry?.dispose(); old.material?.dispose()
       }
-      line.geometry.attributes.position.needsUpdate = true
-      line.geometry.setDrawRange(0, n)
-      line.geometry.computeBoundingSphere()
+      const pts = traj.points
+      if (pts.length < 2) {
+        s.trajectoryLines[ti] = null
+        return
+      }
+      const curve = new THREE.CatmullRomCurve3(pts.map(p => new THREE.Vector3(p.x, p.y, p.z)))
+      const tubularSegments = Math.max(16, Math.min(200, pts.length * 3))
+      const geom = new THREE.TubeGeometry(curve, tubularSegments, 0.012, 8, false)
+      const mat = new THREE.MeshBasicMaterial({ color: hl, depthTest: false, transparent: true, opacity: 0.95 })
+      const mesh = new THREE.Mesh(geom, mat)
+      mesh.renderOrder = 5
+      mesh.visible = trajsInUse.has(ti)
+      s.pathsGroup.add(mesh)
+      s.trajectoryLines[ti] = mesh
     })
   }, [diffusion, highlight])
 
@@ -355,11 +353,9 @@ export function DiffusionTab() {
       // drawing or dragging a voice so dragging doesn't orbit the camera.
       s.controls.enableRotate = !drawModeRef.current && draggingRef.current === null
       s.controls.update()
-      // Scale paths radially in real time with the depth slider: stored
-      // points are unit vectors on the sphere surface, pathsGroup.scale
-      // pulls them inward toward the listener.
-      const dd = drawDepthRef.current
-      s.pathsGroup.scale.set(dd, dd, dd)
+      // Paths render at unit radius (sphere surface). Per-voice depth is
+      // applied to each voice marker individually below.
+      s.pathsGroup.scale.set(1, 1, 1)
 
       const a = audioRef.current
       d.voices.forEach((v, i) => {
@@ -374,12 +370,12 @@ export function DiffusionTab() {
         } else if (v.position) {
           unit = v.position
         }
-        if (unit) marker.position.set(unit.x * dd, unit.y * dd, unit.z * dd)
+        const vd = Math.max(0.1, Math.min(1, v.depth ?? 1))
+        if (unit) marker.position.set(unit.x * vd, unit.y * vd, unit.z * vd)
         if (a && unit) {
-          a.voices[i].panner.setPosition(unit.x * dd * d.radius, unit.y * dd * d.radius, -unit.z * dd * d.radius)
-          // Magnitude-based proximity: depth multiplier IS the magnitude
-          // (since stored vectors are unit). Closer to listener = louder.
-          a.voices[i].distGain.gain.value = Math.max(0.05, Math.min(2, 0.4 / (0.2 + dd)))
+          a.voices[i].panner.setPosition(unit.x * vd * d.radius, unit.y * vd * d.radius, -unit.z * vd * d.radius)
+          // Per-voice proximity: closer to listener (lower depth) = louder.
+          a.voices[i].distGain.gain.value = Math.max(0.05, Math.min(2, 0.4 / (0.2 + vd)))
         }
       })
 
@@ -404,24 +400,6 @@ export function DiffusionTab() {
     }
     raf = requestAnimationFrame(tick)
     return () => cancelAnimationFrame(raf)
-  }, [])
-
-  // ---- wheel during an active draw stroke: modulates strokeDepthRef so
-  // the path being drawn dives inward / out toward the surface in real
-  // time. The global slider is NOT touched. Outside a stroke, the wheel
-  // event flows to OrbitControls for camera zoom. Bound to window in
-  // capture phase so trackpad wheel events still route here while the
-  // canvas has pointer capture.
-  useEffect(() => {
-    const handler = (e) => {
-      if (drawingPtsRef.current === null) return
-      e.preventDefault()
-      e.stopPropagation()
-      const delta = -Math.sign(e.deltaY) * 0.05
-      strokeDepthRef.current = Math.max(0.1, Math.min(1, +(strokeDepthRef.current + delta).toFixed(2)))
-    }
-    window.addEventListener('wheel', handler, { passive: false, capture: true })
-    return () => window.removeEventListener('wheel', handler, { capture: true })
   }, [])
 
   // ---- pointer / raycast helpers ----
@@ -465,11 +443,7 @@ export function DiffusionTab() {
     if (drawMode) {
       const dir = raycastSphereWorld()
       if (!dir) return
-      // Reset per-stroke depth to surface; wheel during the stroke will
-      // dial it inward.
-      strokeDepthRef.current = 1
-      const sd = strokeDepthRef.current
-      drawingPtsRef.current = [{ x: dir.x * sd, y: dir.y * sd, z: dir.z * sd }]
+      drawingPtsRef.current = [{ x: dir.x, y: dir.y, z: dir.z }]
       if (!s.drawingLine) {
         const g = new THREE.BufferGeometry()
         const positions = new Float32Array(MAX_LINE_PTS * 3)
@@ -496,8 +470,7 @@ export function DiffusionTab() {
     if (drawMode && drawingPtsRef.current) {
       const dir = raycastSphereWorld()
       if (!dir) return
-      const sd = strokeDepthRef.current
-      const next = { x: dir.x * sd, y: dir.y * sd, z: dir.z * sd }
+      const next = { x: dir.x, y: dir.y, z: dir.z }
       const last = drawingPtsRef.current[drawingPtsRef.current.length - 1]
       const dx = next.x - last.x, dy = next.y - last.y, dz = next.z - last.z
       if (Math.sqrt(dx * dx + dy * dy + dz * dz) > DRAW_MIN_STEP) {
@@ -592,24 +565,7 @@ export function DiffusionTab() {
         <div ref={containerRef}
           className={'diffusion-sphere' + (drawMode ? ' drawing' : '')}
           onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp} onPointerCancel={onPointerUp}
-        >
-          <div className="depth-track-overlay">
-            <span className="depth-track-label">{(drawDepth * 100).toFixed(0)}%</span>
-            <input
-              className="depth-track"
-              type="range"
-              orient="vertical"
-              min="0.1" max="1" step="0.01"
-              value={drawDepth}
-              onChange={e => setDrawDepth(+e.target.value)}
-              onPointerDown={e => e.stopPropagation()}
-              onPointerMove={e => e.stopPropagation()}
-              onPointerUp={e => e.stopPropagation()}
-              title="Depth"
-            />
-            <span className="depth-track-cap">depth</span>
-          </div>
-        </div>
+        />
         <div className="diffusion-voices">
           {Array.from({ length: MAX_VOICES }).map((_, i) => {
             const v = diffusion.voices[i] || {}
@@ -642,6 +598,11 @@ export function DiffusionTab() {
                   <label>Phase</label>
                   <input className="slider" type="range" min="0" max="1" step="0.01" value={v.phaseOffset || 0} onChange={e => setVoiceProp(i, 'phaseOffset', +e.target.value)} />
                   <span className="value">{((v.phaseOffset || 0) * 100).toFixed(0)}%</span>
+                </div>
+                <div className="row">
+                  <label>Depth</label>
+                  <input className="slider" type="range" min="0.1" max="1" step="0.01" value={v.depth ?? 1} onChange={e => setVoiceProp(i, 'depth', +e.target.value)} />
+                  <span className="value">{(((v.depth ?? 1)) * 100).toFixed(0)}%</span>
                 </div>
               </div>
             )

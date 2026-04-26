@@ -1261,45 +1261,6 @@ input[type="color"] { padding: 0; width: 28px; height: 22px; border: 1px solid v
   cursor: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='20' height='20'%3E%3Ccircle cx='10' cy='10' r='4' fill='%2300ff9c'/%3E%3C/svg%3E") 10 10, crosshair;
   border-color: var(--hl);
 }
-.depth-track-overlay {
-  position: absolute;
-  top: 16px;
-  bottom: 16px;
-  right: 8px;
-  width: 36px;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 6px;
-  pointer-events: none;
-}
-.depth-track-overlay > * { pointer-events: auto; }
-.depth-track-label {
-  font-size: 10px;
-  font-family: monospace;
-  color: var(--hl);
-  background: rgba(0, 0, 0, 0.5);
-  padding: 2px 4px;
-  border-radius: 2px;
-}
-.depth-track-cap {
-  font-size: 9px;
-  font-family: monospace;
-  color: var(--dim);
-  text-transform: uppercase;
-  letter-spacing: 1px;
-}
-.depth-track {
-  flex: 1;
-  appearance: slider-vertical;
-  -webkit-appearance: slider-vertical;
-  width: 24px;
-  cursor: ns-resize;
-  background: transparent;
-  /* Firefox legacy */
-  writing-mode: vertical-lr;
-  direction: rtl;
-}
 .diffusion-voices {
   flex: 1;
   display: flex;
