@@ -456,22 +456,21 @@ export function DiffusionTab() {
     return () => cancelAnimationFrame(raf)
   }, [])
 
-  // ---- keyboard: Up/Down arrows scrub depth (always — not gated by draw
-  // mode). Capture-phase listener so it fires before any focused element
-  // swallows the keys. Logs to console so you can verify it fires.
+  // ---- wheel: scrubs depth ONLY while a draw stroke is in progress
+  // (mouse held down + dragging). Outside an active stroke the wheel
+  // event passes through to OrbitControls for camera zoom.
   useEffect(() => {
+    const el = containerRef.current
+    if (!el) return
     const handler = (e) => {
-      if (e.key !== 'ArrowUp' && e.key !== 'ArrowDown') return
-      const t = e.target
-      // Let range sliders / text inputs handle their own native step.
-      if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA')) return
+      if (drawingPtsRef.current === null) return
       e.preventDefault()
       e.stopPropagation()
-      const delta = e.key === 'ArrowUp' ? 0.1 : -0.1
+      const delta = -Math.sign(e.deltaY) * 0.05
       setDrawDepth(d => Math.max(0.1, Math.min(1, +(d + delta).toFixed(2))))
     }
-    window.addEventListener('keydown', handler, true)
-    return () => window.removeEventListener('keydown', handler, true)
+    el.addEventListener('wheel', handler, { passive: false })
+    return () => el.removeEventListener('wheel', handler)
   }, [])
 
   // ---- pointer / raycast helpers ----
@@ -643,9 +642,6 @@ export function DiffusionTab() {
         }}>
           {drawMode ? '✎ Drawing...' : '✎ Draw path'}
         </button>
-        <label style={{ fontSize: 10, color: 'var(--dim)', textTransform: 'uppercase', letterSpacing: 1, marginLeft: 8 }}>Depth</label>
-        <input type="range" min="0.1" max="1" step="0.01" value={drawDepth} onChange={e => setDrawDepth(+e.target.value)} style={{ width: 70 }} />
-        <span style={{ color: 'var(--hl)', fontSize: 10 }}>{(drawDepth * 100).toFixed(0)}%</span>
         <label style={{ fontSize: 10, color: 'var(--dim)', textTransform: 'uppercase', letterSpacing: 1, marginLeft: 8 }}>Period</label>
         <input type="range" min="0.5" max="60" step="0.1" value={rotationPeriodSec} onChange={e => setDiffusion(prev => ({ ...prev, rotationPeriodSec: +e.target.value }))} style={{ width: 80 }} />
         <span style={{ color: 'var(--hl)', fontSize: 10 }}>{rotationPeriodSec.toFixed(1)}s</span>
@@ -658,7 +654,24 @@ export function DiffusionTab() {
         <div ref={containerRef}
           className={'diffusion-sphere' + (drawMode ? ' drawing' : '')}
           onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp} onPointerCancel={onPointerUp}
-        />
+        >
+          <div className="depth-track-overlay">
+            <span className="depth-track-label">{(drawDepth * 100).toFixed(0)}%</span>
+            <input
+              className="depth-track"
+              type="range"
+              orient="vertical"
+              min="0.1" max="1" step="0.01"
+              value={drawDepth}
+              onChange={e => setDrawDepth(+e.target.value)}
+              onPointerDown={e => e.stopPropagation()}
+              onPointerMove={e => e.stopPropagation()}
+              onPointerUp={e => e.stopPropagation()}
+              title="Depth"
+            />
+            <span className="depth-track-cap">depth</span>
+          </div>
+        </div>
         <div className="diffusion-voices">
           {Array.from({ length: MAX_VOICES }).map((_, i) => {
             const v = diffusion.voices[i] || {}
