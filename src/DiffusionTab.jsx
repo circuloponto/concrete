@@ -361,21 +361,21 @@ export function DiffusionTab() {
       d.voices.forEach((v, i) => {
         const marker = s.voiceMarkers[i]
         if (!marker || !marker.visible) return
-        let unit
+        let pt
         const traj = (v.trajectoryId >= 0 && v.trajectoryId < (d.trajectories?.length || 0))
           ? d.trajectories[v.trajectoryId] : null
         if (traj && traj.points.length >= 2) {
           const t = (((phi / (Math.PI * 2)) + (v.phaseOffset || 0)) % 1 + 1) % 1
-          unit = samplePath3(traj.points, t)
+          pt = samplePath3(traj.points, t)
         } else if (v.position) {
-          unit = v.position
+          pt = v.position
         }
-        const vd = Math.max(0.1, Math.min(1, v.depth ?? 1))
-        if (unit) marker.position.set(unit.x * vd, unit.y * vd, unit.z * vd)
-        if (a && unit) {
-          a.voices[i].panner.setPosition(unit.x * vd * d.radius, unit.y * vd * d.radius, -unit.z * vd * d.radius)
-          // Per-voice proximity: closer to listener (lower depth) = louder.
-          a.voices[i].distGain.gain.value = Math.max(0.05, Math.min(2, 0.4 / (0.2 + vd)))
+        if (pt) marker.position.set(pt.x, pt.y, pt.z)
+        if (a && pt) {
+          a.voices[i].panner.setPosition(pt.x * d.radius, pt.y * d.radius, -pt.z * d.radius)
+          // Magnitude-based proximity: closer to listener = louder.
+          const mag = Math.hypot(pt.x, pt.y, pt.z)
+          a.voices[i].distGain.gain.value = Math.max(0.05, Math.min(2, 0.4 / (0.2 + mag)))
         }
       })
 
@@ -424,6 +424,27 @@ export function DiffusionTab() {
     return { x: p.x / len, y: p.y / len, z: p.z / len }
   }
 
+  // Encode both direction and depth from a single 2D cursor: project the
+  // camera ray through the cursor and return the closest point on that
+  // ray to the listener (origin). Magnitude clamped to [0.1, 1.0] so the
+  // result stays inside the sphere. Cursor near the silhouette → depth ≈ 1;
+  // cursor near origin's screen-projection → depth → 0.1.
+  const pointer3D = () => {
+    const s = sceneRef.current
+    if (!s) return null
+    s.raycaster.setFromCamera(s.ndc, s.camera)
+    const r = s.raycaster.ray
+    const t = -(r.origin.x * r.direction.x + r.origin.y * r.direction.y + r.origin.z * r.direction.z)
+    const cx = r.origin.x + r.direction.x * t
+    const cy = r.origin.y + r.direction.y * t
+    const cz = r.origin.z + r.direction.z * t
+    const mag = Math.hypot(cx, cy, cz)
+    if (mag < 0.001) return { x: 0, y: 0, z: 0.1 }
+    const clamped = Math.max(0.1, Math.min(1, mag))
+    const k = clamped / mag
+    return { x: cx * k, y: cy * k, z: cz * k }
+  }
+
   const raycastVoiceMarker = () => {
     const s = sceneRef.current
     if (!s) return -1
@@ -441,9 +462,9 @@ export function DiffusionTab() {
     const s = sceneRef.current
     if (!s) return
     if (drawMode) {
-      const dir = raycastSphereWorld()
-      if (!dir) return
-      drawingPtsRef.current = [{ x: dir.x, y: dir.y, z: dir.z }]
+      const p = pointer3D()
+      if (!p) return
+      drawingPtsRef.current = [p]
       if (!s.drawingLine) {
         const g = new THREE.BufferGeometry()
         const positions = new Float32Array(MAX_LINE_PTS * 3)
@@ -468,9 +489,8 @@ export function DiffusionTab() {
   const onPointerMove = (e) => {
     if (!setNDC(e)) return
     if (drawMode && drawingPtsRef.current) {
-      const dir = raycastSphereWorld()
-      if (!dir) return
-      const next = { x: dir.x, y: dir.y, z: dir.z }
+      const next = pointer3D()
+      if (!next) return
       const last = drawingPtsRef.current[drawingPtsRef.current.length - 1]
       const dx = next.x - last.x, dy = next.y - last.y, dz = next.z - last.z
       if (Math.sqrt(dx * dx + dy * dy + dz * dz) > DRAW_MIN_STEP) {
@@ -480,9 +500,8 @@ export function DiffusionTab() {
     }
     if (draggingRef.current !== null) {
       const i = draggingRef.current
-      const dir = raycastSphereWorld()
-      if (!dir) return
-      const pos = { x: dir.x, y: dir.y, z: dir.z }
+      const pos = pointer3D()
+      if (!pos) return
       setDiffusion(prev => {
         const nv = prev.voices.slice()
         nv[i] = { ...nv[i], position: pos }
@@ -598,11 +617,6 @@ export function DiffusionTab() {
                   <label>Phase</label>
                   <input className="slider" type="range" min="0" max="1" step="0.01" value={v.phaseOffset || 0} onChange={e => setVoiceProp(i, 'phaseOffset', +e.target.value)} />
                   <span className="value">{((v.phaseOffset || 0) * 100).toFixed(0)}%</span>
-                </div>
-                <div className="row">
-                  <label>Depth</label>
-                  <input className="slider" type="range" min="0.1" max="1" step="0.01" value={v.depth ?? 1} onChange={e => setVoiceProp(i, 'depth', +e.target.value)} />
-                  <span className="value">{(((v.depth ?? 1)) * 100).toFixed(0)}%</span>
                 </div>
               </div>
             )
