@@ -237,7 +237,8 @@ export function DiffusionTab() {
     depthGroup.add(new THREE.Line(dEqGeom, depthMat))
     depthGroup.add(new THREE.Line(dM1Geom, depthMat))
     depthGroup.add(new THREE.Line(dM2Geom, depthMat))
-    depthGroup.visible = false
+    // Always visible — the slider repositions the circle in real time.
+    depthGroup.visible = true
     scene.add(depthGroup)
 
     // listener marker at world origin (does NOT rotate)
@@ -405,9 +406,9 @@ export function DiffusionTab() {
       // drawing or dragging a voice so dragging doesn't orbit the camera.
       s.controls.enableRotate = !drawModeRef.current && draggingRef.current === null
       s.controls.update()
-      // Depth-target shell: visible while drawing, scaled to current depth.
+      // Depth-target shell: always visible, scaled to current depth, so the
+      // slider repositions the inner circle in real time.
       const dd = drawDepthRef.current
-      s.depthGroup.visible = drawModeRef.current
       s.depthGroup.scale.set(dd, dd, dd)
 
       const a = audioRef.current
@@ -457,11 +458,11 @@ export function DiffusionTab() {
   }, [])
 
   // ---- wheel: scrubs depth ONLY while a draw stroke is in progress
-  // (mouse held down + dragging). Outside an active stroke the wheel
-  // event passes through to OrbitControls for camera zoom.
+  // (mouse/finger held during a drag). Outside an active stroke the
+  // wheel event passes through to OrbitControls for camera zoom.
+  // Bound to window in capture phase so trackpad wheel events still
+  // route here while the canvas has pointer capture.
   useEffect(() => {
-    const el = containerRef.current
-    if (!el) return
     const handler = (e) => {
       if (drawingPtsRef.current === null) return
       e.preventDefault()
@@ -469,8 +470,8 @@ export function DiffusionTab() {
       const delta = -Math.sign(e.deltaY) * 0.05
       setDrawDepth(d => Math.max(0.1, Math.min(1, +(d + delta).toFixed(2))))
     }
-    el.addEventListener('wheel', handler, { passive: false })
-    return () => el.removeEventListener('wheel', handler)
+    window.addEventListener('wheel', handler, { passive: false, capture: true })
+    return () => window.removeEventListener('wheel', handler, { capture: true })
   }, [])
 
   // ---- pointer / raycast helpers ----
