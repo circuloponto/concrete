@@ -373,11 +373,11 @@ export function DiffusionTab() {
         if (pt) marker.position.set(pt.x, pt.y, pt.z)
         if (a && pt) {
           a.voices[i].panner.setPosition(pt.x * d.radius, pt.y * d.radius, -pt.z * d.radius)
-          // Inverse-square proximity: ~+9.5 dB at depth 0.1, ~-21 dB at
-          // depth 1.0 → ~30 dB swing between close and distant.
+          // Inverse-square attenuation only — capped at unity so close
+          // voices stay at 0 dB (no boost). Surface (mag=1) ≈ -24 dB.
           const mag = Math.max(0.0001, Math.hypot(pt.x, pt.y, pt.z))
-          const ratio = 0.3 / mag
-          a.voices[i].distGain.gain.value = Math.max(0.05, Math.min(3, ratio * ratio))
+          const ratio = 0.25 / mag
+          a.voices[i].distGain.gain.value = Math.max(0.05, Math.min(1, ratio * ratio))
         }
       })
 
