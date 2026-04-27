@@ -367,6 +367,10 @@ export function DiffusionTab() {
   // ---- rAF loop: rotation phase, audio panners, render ----
   const drawModeRef = useRef(drawMode); drawModeRef.current = drawMode
   const phaseRef = useRef(0)
+  // Per-voice traversal phase ∈ [0, 1). Each voice advances at its own rate
+  // dt * speed / globalPeriod, independent of the sphere's visual phi. Refs
+  // keep the phases continuous when speed changes mid-playback.
+  const voicePhasesRef = useRef(Array.from({ length: MAX_VOICES }, () => 0))
 
   useEffect(() => {
     let raf, last = performance.now()
@@ -400,7 +404,11 @@ export function DiffusionTab() {
         const traj = (v.trajectoryId >= 0 && v.trajectoryId < (d.trajectories?.length || 0))
           ? d.trajectories[v.trajectoryId] : null
         if (traj && traj.points.length >= 2) {
-          const t = (((phi / (Math.PI * 2)) + (v.phaseOffset || 0)) % 1 + 1) % 1
+          const speed = Math.max(0.05, Math.min(8, v.speed ?? 1))
+          if (!drawModeRef.current) {
+            voicePhasesRef.current[i] = ((voicePhasesRef.current[i] + dt * speed / period) % 1 + 1) % 1
+          }
+          const t = (((voicePhasesRef.current[i]) + (v.phaseOffset || 0)) % 1 + 1) % 1
           pt = samplePath3(traj.points, t)
         } else if (v.position) {
           pt = v.position
@@ -653,6 +661,11 @@ export function DiffusionTab() {
                   <label>Phase</label>
                   <input className="slider" type="range" min="0" max="1" step="0.01" value={v.phaseOffset || 0} onChange={e => setVoiceProp(i, 'phaseOffset', +e.target.value)} />
                   <span className="value">{((v.phaseOffset || 0) * 100).toFixed(0)}%</span>
+                </div>
+                <div className="row">
+                  <label>Speed</label>
+                  <input className="slider" type="range" min="0.25" max="4" step="0.05" value={v.speed ?? 1} onChange={e => setVoiceProp(i, 'speed', +e.target.value)} />
+                  <span className="value">{(v.speed ?? 1).toFixed(2)}×</span>
                 </div>
               </div>
             )

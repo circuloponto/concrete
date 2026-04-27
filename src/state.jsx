@@ -162,6 +162,7 @@ function defaultDiffusion() {
       return {
         position: { x: Math.sin(a), y: 0, z: Math.cos(a) },
         phaseOffset: i / MAX_VOICES,
+        speed: 1,
         poolId: '',
         trajectoryId: -1,
       }
@@ -196,6 +197,7 @@ function migrateDiffusion(d) {
       return {
         position: pclamp,
         phaseOffset: v.phaseOffset ?? (i / MAX_VOICES),
+        speed: typeof v.speed === 'number' ? Math.max(0.25, Math.min(4, v.speed)) : 1,
         poolId: v.poolId || '',
         trajectoryId: typeof v.trajectoryId === 'number' ? v.trajectoryId : -1,
       }
@@ -209,6 +211,7 @@ function migrateDiffusion(d) {
     return {
       position,
       phaseOffset: i / MAX_VOICES,
+      speed: 1,
       poolId: v.poolId || '',
       trajectoryId: typeof v.trajectoryId === 'number' ? v.trajectoryId : -1,
     }
