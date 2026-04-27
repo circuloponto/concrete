@@ -196,6 +196,9 @@ function ChainModal({ voice, onClose, onPickEffect }) {
       const r = el.getBoundingClientRect()
       return { top: r.top, bottom: r.bottom }
     })
+    // Track current order locally so move handlers don't read a stale
+    // voice prop closure-captured at drag-start.
+    let currentOrder = [...initialOrder]
     let currentIdx = idx
     let started = false
     const onMove = (ev) => {
@@ -210,11 +213,11 @@ function ChainModal({ voice, onClose, onPickEffect }) {
         }
       }
       if (target !== currentIdx) {
-        const cur = voice.effectOrder
-        const newOrder = [...cur]
+        const newOrder = [...currentOrder]
         const [it] = newOrder.splice(currentIdx, 1)
         newOrder.splice(target, 0, it)
         voice.setEffectOrder(newOrder)
+        currentOrder = newOrder
         currentIdx = target
       }
     }
