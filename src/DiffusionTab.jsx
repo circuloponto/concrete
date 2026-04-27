@@ -1,6 +1,7 @@
 import { useRef, useEffect, useState, useCallback } from 'react'
 import * as THREE from 'three'
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js'
+import { ResonanceAudio } from 'resonance-audio'
 import { useStore, MAX_VOICES } from './state'
 
 const SPHERE_RADIUS = 1
@@ -64,22 +65,27 @@ export function DiffusionTab() {
     const mixer = ctx.createGain(); mixer.gain.value = 1
     const msDest = ctx.createMediaStreamDestination()
     mixer.connect(ctx.destination); mixer.connect(msDest)
+    // Resonance Audio: SADIE-based HRTF binaural rendering (markedly better
+    // than Web Audio's built-in IRCAM dataset). One engine for all voices,
+    // outputs binaural stereo to mixer. Per-voice rolloff is 'none' so our
+    // distGain stays the sole proximity attenuator.
+    const resonance = new ResonanceAudio(ctx, { ambisonicOrder: 3 })
+    resonance.output.connect(mixer)
     const voices = Array.from({ length: MAX_VOICES }, () => {
-      const panner = ctx.createPanner()
-      panner.panningModel = 'HRTF'
-      panner.setPosition(0, 0, -1)
+      const rSource = resonance.createSource()
+      rSource.setRolloff('none')
+      rSource.setPosition(0, 0, -1)
       // envGain: short fade-in/out on play/stop to mask source onsets.
       // distGain: proximity attenuation written every frame from the rAF tick.
       const envGain = ctx.createGain()
       envGain.gain.value = 0
       const distGain = ctx.createGain()
       distGain.gain.value = 1
-      envGain.connect(panner)
-      panner.connect(distGain)
-      distGain.connect(mixer)
-      return { panner, envGain, distGain, source: null }
+      envGain.connect(distGain)
+      distGain.connect(rSource.input)
+      return { rSource, envGain, distGain, source: null }
     })
-    audioRef.current = { ctx, mixer, msDest, voices }
+    audioRef.current = { ctx, mixer, msDest, resonance, voices }
     return audioRef.current
   }, [getAudioCtx])
 
@@ -88,9 +94,9 @@ export function DiffusionTab() {
     audioRef.current.voices.forEach(v => {
       if (v.source) { try { v.source.stop() } catch {}; try { v.source.disconnect() } catch {} }
       try { v.envGain.disconnect() } catch {}
-      try { v.panner.disconnect() } catch {}
       try { v.distGain.disconnect() } catch {}
     })
+    try { audioRef.current.resonance.output.disconnect() } catch {}
     try { audioRef.current.mixer.disconnect() } catch {}
     audioRef.current = null
   }, [])
@@ -401,7 +407,7 @@ export function DiffusionTab() {
         }
         if (pt) marker.position.set(pt.x, pt.y, pt.z)
         if (a && pt) {
-          a.voices[i].panner.setPosition(pt.x * d.radius, pt.y * d.radius, -pt.z * d.radius)
+          a.voices[i].rSource.setPosition(pt.x * d.radius, pt.y * d.radius, -pt.z * d.radius)
           // Inverse-square attenuation only — capped at unity so close
           // voices stay at 0 dB (no boost). Surface (mag=1) ≈ -24 dB.
           const mag = Math.max(0.0001, Math.hypot(pt.x, pt.y, pt.z))
