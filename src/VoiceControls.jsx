@@ -296,14 +296,14 @@ function ChainModal({ voice, onClose, onPickEffect }) {
                 key={name}
                 ref={el => { if (el) itemsRef.current[name] = el; else delete itemsRef.current[name] }}
                 className={'chain-modal-item' + (active ? '' : ' inactive') + (dragging ? ' dragging' : '')}
+                onPointerDown={(e) => { console.log('[chain] row pointerdown', name, i); startDrag(e, i) }}
                 onClick={onClick}
-                title="click to open · shift-click to toggle · drag handle to reorder"
+                title="drag anywhere on the row to reorder · click to open · shift-click to toggle"
               >
                 <span className="chain-modal-num">{i + 1}</span>
                 <span
                   className="chain-modal-handle"
                   aria-hidden="true"
-                  onPointerDown={(e) => { e.stopPropagation(); startDrag(e, i) }}
                   title="drag to reorder"
                 >⋮⋮</span>
                 <span className="chain-modal-name">{EFFECT_LABELS[name] || name}</span>
