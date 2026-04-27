@@ -189,6 +189,7 @@ function ChainModal({ voice, onClose, onPickEffect }) {
     if (e.button !== 0) return
     const initialOrder = voice.effectOrder
     const name = initialOrder[idx]
+    console.log('[chain] startDrag', { idx, name, order: initialOrder })
     // Snapshot slot rects once — they represent visual positions 0..n-1,
     // which don't change as the order array mutates (items FLIP between slots).
     const slots = initialOrder.map(n => {
@@ -216,6 +217,7 @@ function ChainModal({ voice, onClose, onPickEffect }) {
         const newOrder = [...currentOrder]
         const [it] = newOrder.splice(currentIdx, 1)
         newOrder.splice(target, 0, it)
+        console.log('[chain] reorder', currentIdx, '→', target, newOrder)
         voice.setEffectOrder(newOrder)
         currentOrder = newOrder
         currentIdx = target
