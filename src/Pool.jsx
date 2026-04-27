@@ -74,25 +74,48 @@ export function Pool({ selectedId, onSelect }) {
     }
     e.target.value = ''
   }
+  const recordStream = (stream, namePrefix, label) => {
+    const ctx = getAudioCtx(); const rec = new MediaRecorder(stream); const chunks = []
+    rec.ondataavailable = (e) => chunks.push(e.data)
+    rec.onstop = async () => {
+      const blob = new Blob(chunks); const buf = await ctx.decodeAudioData(await blob.arrayBuffer())
+      addPoolItem(`${namePrefix}_${pool.length + 1}`, buf, 'imported'); stream.getTracks().forEach(t => t.stop())
+    }
+    rec.start()
+    const stop = () => { rec.stop(); document.body.removeChild(overlay) }
+    const overlay = document.createElement('div')
+    overlay.style.cssText = 'position:fixed;inset:0;background:#000a;display:flex;align-items:center;justify-content:center;z-index:9999;flex-direction:column;gap:12px;color:#fff;font-family:monospace'
+    overlay.innerHTML = `<div style="color:#f33;font-size:24px">● RECORDING ${label}</div>`
+    const btn = document.createElement('button')
+    btn.textContent = 'STOP'
+    btn.style.cssText = 'padding:10px 20px;background:transparent;color:#00ff9c;border:1px solid #00ff9c;cursor:pointer;font-family:monospace'
+    btn.onclick = stop; overlay.appendChild(btn); document.body.appendChild(overlay)
+  }
   const onMic = async () => {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
-      const ctx = getAudioCtx(); const rec = new MediaRecorder(stream); const chunks = []
-      rec.ondataavailable = (e) => chunks.push(e.data)
-      rec.onstop = async () => {
-        const blob = new Blob(chunks); const buf = await ctx.decodeAudioData(await blob.arrayBuffer())
-        addPoolItem(`mic_${pool.length + 1}`, buf, 'imported'); stream.getTracks().forEach(t => t.stop())
-      }
-      rec.start()
-      const stop = () => { rec.stop(); document.body.removeChild(overlay) }
-      const overlay = document.createElement('div')
-      overlay.style.cssText = 'position:fixed;inset:0;background:#000a;display:flex;align-items:center;justify-content:center;z-index:9999;flex-direction:column;gap:12px;color:#fff;font-family:monospace'
-      overlay.innerHTML = '<div style="color:#f33;font-size:24px">● RECORDING</div>'
-      const btn = document.createElement('button')
-      btn.textContent = 'STOP'
-      btn.style.cssText = 'padding:10px 20px;background:transparent;color:#00ff9c;border:1px solid #00ff9c;cursor:pointer;font-family:monospace'
-      btn.onclick = stop; overlay.appendChild(btn); document.body.appendChild(overlay)
+      recordStream(stream, 'mic', 'MIC')
     } catch (err) { alert('mic error: ' + err.message) }
+  }
+  const onTab = async () => {
+    try {
+      // getDisplayMedia requires video to be requested for tab/system audio
+      // capture in Chromium browsers; we discard the video track immediately
+      // and only record the audio track. Browser will prompt the user to
+      // pick a tab/window and toggle "Share tab audio".
+      const stream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true })
+      const audioTracks = stream.getAudioTracks()
+      if (audioTracks.length === 0) {
+        stream.getTracks().forEach(t => t.stop())
+        alert('No audio captured. When prompted, pick a tab and tick "Share tab audio".')
+        return
+      }
+      stream.getVideoTracks().forEach(t => t.stop())
+      const audioStream = new MediaStream(audioTracks)
+      recordStream(audioStream, 'tab', 'TAB AUDIO')
+    } catch (err) {
+      if (err.name !== 'NotAllowedError') alert('tab audio error: ' + err.message)
+    }
   }
   const onLoadSession = async (e) => { const f = e.target.files?.[0]; if (f) await loadSession(f); e.target.value = '' }
   const onDragStart = (e, item) => { e.dataTransfer.setData('poolId', item.id); e.dataTransfer.effectAllowed = 'copy' }
@@ -193,6 +216,7 @@ export function Pool({ selectedId, onSelect }) {
       <div className="pool-actions" data-tutorial="save-actions">
         <button onClick={() => fileRef.current.click()}>Load audio</button>
         <button onClick={onMic}>Record mic</button>
+        <button onClick={onTab} title="capture audio playing in another browser tab (pick the tab + tick 'Share tab audio')">Record tab</button>
         <input ref={fileRef} type="file" accept="audio/*" multiple onChange={onFiles} />
         <div style={{ borderTop: '1px solid var(--border)', margin: '6px 0' }} />
         <button onClick={saveSession}>Save session</button>
