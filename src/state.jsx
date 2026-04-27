@@ -162,7 +162,6 @@ function defaultDiffusion() {
       return {
         position: { x: Math.sin(a), y: 0, z: Math.cos(a) },
         phaseOffset: i / MAX_VOICES,
-        depth: 1,
         poolId: '',
         trajectoryId: -1,
       }
@@ -189,10 +188,14 @@ function migrateDiffusion(d) {
   const voices = Array.from({ length: MAX_VOICES }, (_, i) => {
     const v = d.voices?.[i] || {}
     if (v.position && typeof v.position === 'object') {
+      // position carries depth via its magnitude (length); voices migrated
+      // from older session data without depth land on the unit sphere.
+      const px = v.position.x ?? 0, py = v.position.y ?? 0, pz = v.position.z ?? 0
+      const plen = Math.hypot(px, py, pz)
+      const pclamp = plen < 0.0001 ? { x: 0, y: 0, z: 1 } : { x: px, y: py, z: pz }
       return {
-        position: normalizeOrFront(v.position),
+        position: pclamp,
         phaseOffset: v.phaseOffset ?? (i / MAX_VOICES),
-        depth: typeof v.depth === 'number' ? Math.max(0.1, Math.min(1, v.depth)) : 1,
         poolId: v.poolId || '',
         trajectoryId: typeof v.trajectoryId === 'number' ? v.trajectoryId : -1,
       }
@@ -206,7 +209,6 @@ function migrateDiffusion(d) {
     return {
       position,
       phaseOffset: i / MAX_VOICES,
-      depth: 1,
       poolId: v.poolId || '',
       trajectoryId: typeof v.trajectoryId === 'number' ? v.trajectoryId : -1,
     }

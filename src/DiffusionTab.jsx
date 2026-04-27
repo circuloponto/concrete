@@ -67,18 +67,17 @@ export function DiffusionTab() {
     const voices = Array.from({ length: MAX_VOICES }, () => {
       const panner = ctx.createPanner()
       panner.panningModel = 'HRTF'
-      panner.distanceModel = 'linear'
-      panner.refDistance = 1; panner.maxDistance = 50; panner.rolloffFactor = 0.0
-      panner.coneInnerAngle = 360; panner.coneOuterAngle = 360; panner.coneOuterGain = 1
       panner.setPosition(0, 0, -1)
-      // distGain after the panner gives audible proximity: small magnitude
-      // (near origin, the listener) → louder; magnitude 1 (sphere surface)
-      // → quieter. rAF tick writes gain.value each frame.
+      // envGain: short fade-in/out on play/stop to mask source onsets.
+      // distGain: proximity attenuation written every frame from the rAF tick.
+      const envGain = ctx.createGain()
+      envGain.gain.value = 0
       const distGain = ctx.createGain()
       distGain.gain.value = 1
+      envGain.connect(panner)
       panner.connect(distGain)
       distGain.connect(mixer)
-      return { panner, distGain, source: null }
+      return { panner, envGain, distGain, source: null }
     })
     audioRef.current = { ctx, mixer, msDest, voices }
     return audioRef.current
@@ -86,13 +85,19 @@ export function DiffusionTab() {
 
   useEffect(() => () => {
     if (!audioRef.current) return
-    audioRef.current.voices.forEach(v => { if (v.source) try { v.source.stop() } catch {} })
+    audioRef.current.voices.forEach(v => {
+      if (v.source) { try { v.source.stop() } catch {}; try { v.source.disconnect() } catch {} }
+      try { v.envGain.disconnect() } catch {}
+      try { v.panner.disconnect() } catch {}
+      try { v.distGain.disconnect() } catch {}
+    })
     try { audioRef.current.mixer.disconnect() } catch {}
     audioRef.current = null
   }, [])
 
   const diffRef = useRef(diffusion); diffRef.current = diffusion
 
+  const FADE_SEC = 0.012
   const playVoice = (i, overridePoolId) => {
     const a = ensureAudio()
     const poolId = overridePoolId || diffRef.current.voices[i]?.poolId
@@ -100,30 +105,54 @@ export function DiffusionTab() {
     const buf = getBuffer(poolId)
     if (!buf) return
     stopVoice(i)
+    const v = a.voices[i]
     const src = a.ctx.createBufferSource()
     src.buffer = buf; src.loop = true
-    src.connect(a.voices[i].panner); src.start()
-    a.voices[i].source = src
-    src.onended = () => { a.voices[i].source = null; setPlayingState(p => { const n = [...p]; n[i] = false; return n }) }
+    src.connect(v.envGain); src.start()
+    const now = a.ctx.currentTime
+    v.envGain.gain.cancelScheduledValues(now)
+    v.envGain.gain.setValueAtTime(0, now)
+    v.envGain.gain.linearRampToValueAtTime(1, now + FADE_SEC)
+    v.source = src
+    src.onended = () => { if (v.source === src) v.source = null; setPlayingState(p => { const n = [...p]; n[i] = false; return n }) }
     setPlayingState(p => { const n = [...p]; n[i] = true; return n })
   }
   const stopVoice = (i) => {
     if (!audioRef.current) return
     const v = audioRef.current.voices[i]
-    if (v.source) { try { v.source.stop() } catch {}; try { v.source.disconnect() } catch {}; v.source = null }
+    if (v.source) {
+      const now = audioRef.current.ctx.currentTime
+      const cur = v.envGain.gain.value
+      v.envGain.gain.cancelScheduledValues(now)
+      v.envGain.gain.setValueAtTime(cur, now)
+      v.envGain.gain.linearRampToValueAtTime(0, now + FADE_SEC)
+      const src = v.source
+      try { src.stop(now + FADE_SEC + 0.005) } catch {}
+      // disconnect happens in src.onended; null source ref now so re-play
+      // doesn't try to stop the already-stopping node.
+      v.source = null
+    }
     setPlayingState(p => { const n = [...p]; n[i] = false; return n })
   }
   const playAll = () => diffRef.current.voices.forEach((v, i) => { if (v.poolId) playVoice(i) })
   const stopAll = () => { for (let i = 0; i < MAX_VOICES; i++) stopVoice(i) }
 
   const recRef = useRef(null)
+  const pickRecorderMime = () => {
+    const candidates = ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4;codecs=mp4a.40.2', 'audio/mp4']
+    for (const m of candidates) {
+      if (typeof MediaRecorder !== 'undefined' && MediaRecorder.isTypeSupported && MediaRecorder.isTypeSupported(m)) return m
+    }
+    return ''
+  }
   const startRecord = () => {
     const a = ensureAudio()
-    const rec = new MediaRecorder(a.msDest.stream)
+    const mimeType = pickRecorderMime()
+    const rec = mimeType ? new MediaRecorder(a.msDest.stream, { mimeType }) : new MediaRecorder(a.msDest.stream)
     const chunks = []
     rec.ondataavailable = e => chunks.push(e.data)
     rec.onstop = async () => {
-      const blob = new Blob(chunks)
+      const blob = new Blob(chunks, mimeType ? { type: mimeType } : undefined)
       const buf = await getAudioCtx().decodeAudioData(await blob.arrayBuffer())
       addPoolItem(captureName || `binaural_${Date.now().toString(36)}`, buf, 'diffusion')
     }
@@ -394,7 +423,6 @@ export function DiffusionTab() {
         s.drawingLine.geometry.attributes.position.needsUpdate = true
         s.drawingLine.geometry.setDrawRange(0, n)
         s.drawingLine.geometry.computeBoundingSphere()
-        if (s.drawingRibbon) fillRibbon(s.drawingRibbon, pts)
       }
 
       s.renderer.render(s.scene, s.camera)
