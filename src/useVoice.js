@@ -26,6 +26,17 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
   const [sourceName, setSourceName] = useState('')
   const [loadedPoolId, setLoadedPoolId] = useState(initial.loadedPoolId || '')
   const [playing, setPlaying] = useState(false)
+  // Diffusion send: a GainNode that receives a parallel copy of the voice's
+  // post-effect-chain master output. DiffusionTab connects this to its
+  // Resonance Audio source input when the user routes a Sound voice into
+  // diffusion. Created eagerly so DiffusionTab can wire it up before the
+  // voice has played for the first time.
+  const [diffusionSend] = useState(() => {
+    const node = getAudioCtx().createGain()
+    node.gain.value = 1
+    return node
+  })
+  useEffect(() => () => { try { diffusionSend.disconnect() } catch {} }, [diffusionSend])
   // Mirror playing flag into a ref so schedulers (granulator, freeze) can
   // gate their spawn loops without triggering re-renders or effect re-runs.
   const playingRef = useRef(false)
@@ -1165,6 +1176,7 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
       }
       master.connect(outputNode)
       master.connect(printDest)
+      master.connect(diffusionSend)
     }
     // Parallel tap on the voice master for the Print feature. A private
     // MediaStreamAudioDestinationNode receives exactly what outputNode gets
@@ -2182,5 +2194,6 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
     printVoice, swapToPrint, unprint,
     play, stop, onScrub, toggleReverse, loadFromPool,
     randomize, reset,
+    diffusionSend,
   }
 }

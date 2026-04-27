@@ -8,6 +8,7 @@ const SPHERE_RADIUS = 1
 const MARKER_RADIUS = 0.06
 const DRAW_MIN_STEP = 0.04   // min angular step (chord length on unit sphere) between drawn points
 const MAX_LINE_PTS = 2000    // pre-allocated capacity for trajectory + drawing lines
+const MAX_TRAJECTORIES = 12  // FIFO cap so the scene + memory don't grow unbounded
 
 // 3D arc-length helpers
 function pathLength3(pts) {
@@ -48,7 +49,7 @@ function hexToInt(hex, fallback = 0x00ff9c) {
 const VOICE_COLORS = [0x00ff9c, 0xff6b6b, 0x4ecdc4, 0xffe66d, 0xa29bfe, 0xfd79a8]
 
 export function DiffusionTab() {
-  const { diffusion, setDiffusion, getAudioCtx, getBuffer, addPoolItem, pool, highlight } = useStore()
+  const { diffusion, setDiffusion, getAudioCtx, getBuffer, addPoolItem, pool, highlight, transportRef } = useStore()
   const containerRef = useRef(null)
   const [playing, setPlayingState] = useState(() => Array(MAX_VOICES).fill(false))
   const [recording, setRecording] = useState(false)
@@ -69,6 +70,14 @@ export function DiffusionTab() {
     // than Web Audio's built-in IRCAM dataset). One engine for all voices,
     // outputs binaural stereo to mixer. Per-voice rolloff is 'none' so our
     // distGain stays the sole proximity attenuator.
+    //
+    // Stereo source caveat: a Resonance Source is a point in 3D space — if a
+    // pool buffer is stereo, channels are summed to mono inside the engine
+    // before HRTF processing. Composers wanting to preserve stereo width
+    // can route a Sound voice (post-effect-chain) into diffusion: each Sound
+    // voice already operates on a stereo signal; routing collapses it here.
+    // A future "decorrelate" mode could add a small azimuth offset between
+    // channel-derived sources for stereo-aware spatialization.
     const resonance = new ResonanceAudio(ctx, { ambisonicOrder: 3 })
     resonance.output.connect(mixer)
     const voices = Array.from({ length: MAX_VOICES }, () => {
@@ -104,39 +113,68 @@ export function DiffusionTab() {
   const diffRef = useRef(diffusion); diffRef.current = diffusion
 
   const FADE_SEC = 0.012
+  // Resolve a poolId to either a Sound voice send tap (if it begins with
+  // "voice:") or an AudioBuffer from the pool. Returns { kind, ... }.
+  const resolveSource = (poolId) => {
+    if (!poolId) return null
+    if (typeof poolId === 'string' && poolId.startsWith('voice:')) {
+      const n = parseInt(poolId.slice(6), 10)
+      const sends = transportRef?.current?.diffusionSends
+      const node = sends && sends[n - 1]
+      return node ? { kind: 'voice', node } : null
+    }
+    const buf = getBuffer(poolId)
+    return buf ? { kind: 'buffer', buf } : null
+  }
   const playVoice = (i, overridePoolId) => {
     const a = ensureAudio()
     const poolId = overridePoolId || diffRef.current.voices[i]?.poolId
-    if (!poolId) return
-    const buf = getBuffer(poolId)
-    if (!buf) return
+    const src = resolveSource(poolId)
+    if (!src) return
     stopVoice(i)
     const v = a.voices[i]
-    const src = a.ctx.createBufferSource()
-    src.buffer = buf; src.loop = true
-    src.connect(v.envGain); src.start()
     const now = a.ctx.currentTime
-    v.envGain.gain.cancelScheduledValues(now)
-    v.envGain.gain.setValueAtTime(0, now)
-    v.envGain.gain.linearRampToValueAtTime(1, now + FADE_SEC)
-    v.source = src
-    src.onended = () => { if (v.source === src) v.source = null; setPlayingState(p => { const n = [...p]; n[i] = false; return n }) }
+    if (src.kind === 'buffer') {
+      const bufSrc = a.ctx.createBufferSource()
+      bufSrc.buffer = src.buf; bufSrc.loop = true
+      bufSrc.connect(v.envGain); bufSrc.start()
+      v.envGain.gain.cancelScheduledValues(now)
+      v.envGain.gain.setValueAtTime(0, now)
+      v.envGain.gain.linearRampToValueAtTime(1, now + FADE_SEC)
+      v.source = bufSrc
+      v.routedSend = null
+      bufSrc.onended = () => { if (v.source === bufSrc) v.source = null; setPlayingState(p => { const n = [...p]; n[i] = false; return n }) }
+    } else {
+      // Routed Sound-tab voice: connect its diffusion send into envGain.
+      // Sound voice playback is controlled from the Sound tab; here we
+      // just maintain the routing and a fade envelope.
+      try { src.node.connect(v.envGain) } catch {}
+      v.envGain.gain.cancelScheduledValues(now)
+      v.envGain.gain.setValueAtTime(0, now)
+      v.envGain.gain.linearRampToValueAtTime(1, now + FADE_SEC)
+      v.source = null
+      v.routedSend = src.node
+    }
     setPlayingState(p => { const n = [...p]; n[i] = true; return n })
   }
   const stopVoice = (i) => {
     if (!audioRef.current) return
     const v = audioRef.current.voices[i]
+    const now = audioRef.current.ctx.currentTime
+    const cur = v.envGain.gain.value
+    v.envGain.gain.cancelScheduledValues(now)
+    v.envGain.gain.setValueAtTime(cur, now)
+    v.envGain.gain.linearRampToValueAtTime(0, now + FADE_SEC)
     if (v.source) {
-      const now = audioRef.current.ctx.currentTime
-      const cur = v.envGain.gain.value
-      v.envGain.gain.cancelScheduledValues(now)
-      v.envGain.gain.setValueAtTime(cur, now)
-      v.envGain.gain.linearRampToValueAtTime(0, now + FADE_SEC)
       const src = v.source
       try { src.stop(now + FADE_SEC + 0.005) } catch {}
-      // disconnect happens in src.onended; null source ref now so re-play
-      // doesn't try to stop the already-stopping node.
       v.source = null
+    }
+    if (v.routedSend) {
+      const sendNode = v.routedSend
+      // Defer disconnect until the fade-out completes.
+      setTimeout(() => { try { sendNode.disconnect(v.envGain) } catch {} }, (FADE_SEC + 0.01) * 1000)
+      v.routedSend = null
     }
     setPlayingState(p => { const n = [...p]; n[i] = false; return n })
   }
@@ -559,10 +597,20 @@ export function DiffusionTab() {
       const pts = drawingPtsRef.current
       const s = sceneRef.current
       if (pts.length >= 2) {
-        setDiffusion(prev => ({
-          ...prev,
-          trajectories: [...(prev.trajectories || []), { points: pts, name: `path ${(prev.trajectories?.length || 0) + 1}` }],
-        }))
+        setDiffusion(prev => {
+          const all = [...(prev.trajectories || []), { points: pts, name: `path ${(prev.trajectories?.length || 0) + 1}` }]
+          // FIFO: drop oldest if past cap. Voices referencing dropped paths
+          // get their trajectoryId reset to -1.
+          const dropCount = Math.max(0, all.length - MAX_TRAJECTORIES)
+          const next = dropCount > 0 ? all.slice(dropCount) : all
+          const voices = dropCount > 0 ? prev.voices.map(vc => ({
+            ...vc,
+            trajectoryId: typeof vc.trajectoryId === 'number' && vc.trajectoryId >= 0
+              ? (vc.trajectoryId - dropCount < 0 ? -1 : vc.trajectoryId - dropCount)
+              : -1,
+          })) : prev.voices
+          return { ...prev, trajectories: next, voices }
+        })
       }
       drawingPtsRef.current = null
       if (s?.drawingLine) {
@@ -645,7 +693,14 @@ export function DiffusionTab() {
                   <select className="select-inline" value={v.poolId || ''}
                     onChange={e => { const pid = e.target.value; setVoiceProp(i, 'poolId', pid); stopVoice(i); if (pid) playVoice(i, pid) }}>
                     <option value="">— none —</option>
-                    {pool.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+                    <optgroup label="Sound voices (post-effects)">
+                      {Array.from({ length: MAX_VOICES }, (_, vn) => (
+                        <option key={`voice:${vn + 1}`} value={`voice:${vn + 1}`}>voice {vn + 1}</option>
+                      ))}
+                    </optgroup>
+                    <optgroup label="Pool">
+                      {pool.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+                    </optgroup>
                   </select>
                 </div>
                 <div className="row"><label>Lat / Lon</label><span className="value">{lat.toFixed(0)}° · {lon.toFixed(0)}°</span></div>

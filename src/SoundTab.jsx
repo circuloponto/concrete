@@ -5,7 +5,7 @@ import { VoicePlayer } from './VoicePlayer'
 import { VoiceControls } from './VoiceControls'
 
 export function SoundTab({ selectedPoolId }) {
-  const { getAudioCtx, addPoolItem, soundState, setSoundState, lowCpuMode, setLowCpuMode } = useStore()
+  const { getAudioCtx, addPoolItem, soundState, setSoundState, lowCpuMode, setLowCpuMode, transportRef } = useStore()
   const [audioNodes] = useState(() => {
     const ctx = getAudioCtx()
     const busInput = ctx.createGain(); busInput.gain.value = 1
@@ -114,6 +114,9 @@ export function SoundTab({ selectedPoolId }) {
   const v4 = useVoice(5, audioNodes.mixer, soundState.voices[4], onSnap4, audioNodes)
   const v5 = useVoice(6, audioNodes.mixer, soundState.voices[5], onSnap5, audioNodes)
   const voices = [v0, v1, v2, v3, v4, v5]
+  // Expose per-voice diffusion sends so DiffusionTab can route post-effect
+  // chain audio into its Resonance Audio spatializer.
+  if (transportRef) transportRef.current.diffusionSends = voices.map(v => v.diffusionSend)
 
   const voiceCount = Math.min(MAX_VOICES, Math.max(1, soundState.voiceCount || 2))
   const setVoiceCount = (n) => setSoundState(prev => ({ ...prev, voiceCount: Math.min(MAX_VOICES, Math.max(1, n)) }))
