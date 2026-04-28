@@ -114,9 +114,13 @@ export function SoundTab({ selectedPoolId }) {
   const v4 = useVoice(5, audioNodes.mixer, soundState.voices[4], onSnap4, audioNodes)
   const v5 = useVoice(6, audioNodes.mixer, soundState.voices[5], onSnap5, audioNodes)
   const voices = [v0, v1, v2, v3, v4, v5]
-  // Expose per-voice diffusion sends so DiffusionTab can route post-effect
-  // chain audio into its Resonance Audio spatializer.
-  if (transportRef) transportRef.current.diffusionSends = voices.map(v => v.diffusionSend)
+  // Expose per-voice diffusion sends + a router toggle so DiffusionTab can
+  // route post-effect chain audio into its Resonance spatializer AND mute
+  // the Sound-tab direct output when a voice is being diffused.
+  if (transportRef) {
+    transportRef.current.diffusionSends = voices.map(v => v.diffusionSend)
+    transportRef.current.voiceRouters = voices.map(v => v.setDiffusionRouted)
+  }
 
   const voiceCount = Math.min(MAX_VOICES, Math.max(1, soundState.voiceCount || 2))
   const setVoiceCount = (n) => setSoundState(prev => ({ ...prev, voiceCount: Math.min(MAX_VOICES, Math.max(1, n)) }))

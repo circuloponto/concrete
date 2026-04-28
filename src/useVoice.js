@@ -37,6 +37,27 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
     return node
   })
   useEffect(() => () => { try { diffusionSend.disconnect() } catch {} }, [diffusionSend])
+  // directOut sits between master and outputNode (the Sound mixer). When
+  // a DiffusionTab voice routes this Sound voice as a source, directOut
+  // is muted so the spatialized output is the only audible path.
+  // directRouteCount refcounts so multiple Diffusion voices routing the
+  // same Sound voice don't unmute prematurely.
+  const [directOut] = useState(() => {
+    const node = getAudioCtx().createGain()
+    node.gain.value = 1
+    return node
+  })
+  const directRouteCount = useRef(0)
+  const setDiffusionRouted = useCallback((routed) => {
+    if (routed) directRouteCount.current += 1
+    else directRouteCount.current = Math.max(0, directRouteCount.current - 1)
+    directOut.gain.value = directRouteCount.current > 0 ? 0 : 1
+  }, [directOut])
+  useEffect(() => {
+    if (!outputNode) return
+    try { directOut.connect(outputNode) } catch {}
+    return () => { try { directOut.disconnect() } catch {} }
+  }, [directOut, outputNode])
   // Mirror playing flag into a ref so schedulers (granulator, freeze) can
   // gate their spawn loops without triggering re-renders or effect re-runs.
   const playingRef = useRef(false)
@@ -1174,7 +1195,7 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
         if (i < order.length - 1) g.connect(modules[order[i + 1]].input)
         else g.connect(master)
       }
-      master.connect(outputNode)
+      master.connect(directOut)
       master.connect(printDest)
       master.connect(diffusionSend)
     }
@@ -2194,6 +2215,6 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
     printVoice, swapToPrint, unprint,
     play, stop, onScrub, toggleReverse, loadFromPool,
     randomize, reset,
-    diffusionSend,
+    diffusionSend, setDiffusionRouted,
   }
 }
