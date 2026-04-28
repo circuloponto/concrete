@@ -92,7 +92,12 @@ export function DiffusionTab() {
       distGain.gain.value = 1
       envGain.connect(distGain)
       distGain.connect(rSource.input)
-      return { rSource, envGain, distGain, source: null }
+      // Temporary parallel direct path to mixer at -12 dB so we can verify
+      // signal is reaching distGain at all. If the routed Sound voice is
+      // audible (faint, non-spatial), the issue is downstream in Resonance.
+      const debugDirect = ctx.createGain(); debugDirect.gain.value = 0.25
+      distGain.connect(debugDirect); debugDirect.connect(mixer)
+      return { rSource, envGain, distGain, debugDirect, source: null }
     })
     audioRef.current = { ctx, mixer, msDest, resonance, voices }
     return audioRef.current
@@ -104,6 +109,7 @@ export function DiffusionTab() {
       if (v.source) { try { v.source.stop() } catch {}; try { v.source.disconnect() } catch {} }
       try { v.envGain.disconnect() } catch {}
       try { v.distGain.disconnect() } catch {}
+      try { v.debugDirect?.disconnect() } catch {}
     })
     try { audioRef.current.resonance.output.disconnect() } catch {}
     try { audioRef.current.mixer.disconnect() } catch {}
