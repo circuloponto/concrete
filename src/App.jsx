@@ -155,7 +155,12 @@ function Shell() {
         </div>
         {poolOpen && <div className="pool-backdrop" onClick={() => setPoolOpen(false)} />}
         <div className="content">
-          {tab === 'sound' && <SoundTab key={sessionVersion} selectedPoolId={selectedPoolId} />}
+          {/* SoundTab stays mounted across tab switches so its per-voice
+              diffusionSend GainNodes remain alive; otherwise switching to
+              Diffusion would dispose them and break Sound→Diffusion routing. */}
+          <div style={{ display: tab === 'sound' ? 'contents' : 'none' }}>
+            <SoundTab key={sessionVersion} selectedPoolId={selectedPoolId} />
+          </div>
           {tab === 'object' && <ObjectTab key={sessionVersion} />}
           {tab === 'timeline' && <TimelineTab key={sessionVersion} />}
           {tab === 'diffusion' && <DiffusionTab key={sessionVersion} />}
