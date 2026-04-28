@@ -121,6 +121,7 @@ export function DiffusionTab() {
       const n = parseInt(poolId.slice(6), 10)
       const sends = transportRef?.current?.diffusionSends
       const node = sends && sends[n - 1]
+      console.log('[diff] resolveSource voice:', n, 'sends array len:', sends?.length, 'node:', !!node)
       return node ? { kind: 'voice', node } : null
     }
     const buf = getBuffer(poolId)
@@ -148,7 +149,12 @@ export function DiffusionTab() {
       // Routed Sound-tab voice: connect its diffusion send into envGain.
       // Sound voice playback is controlled from the Sound tab; here we
       // just maintain the routing and a fade envelope.
-      try { src.node.connect(v.envGain) } catch {}
+      try {
+        src.node.connect(v.envGain)
+        console.log('[diff] routed Sound voice send → envGain', { send: src.node, envGain: v.envGain, distGain: v.distGain, rSource: v.rSource })
+      } catch (err) {
+        console.error('[diff] connect failed', err)
+      }
       v.envGain.gain.cancelScheduledValues(now)
       v.envGain.gain.setValueAtTime(0, now)
       v.envGain.gain.linearRampToValueAtTime(1, now + FADE_SEC)
