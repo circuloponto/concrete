@@ -153,11 +153,19 @@ export function DiffusionTab() {
       bufSrc.onended = () => { if (v.source === bufSrc) v.source = null; setPlayingState(p => { const n = [...p]; n[i] = false; return n }) }
     } else {
       // Routed Sound-tab voice: connect its diffusion send into envGain.
-      // Sound voice playback is controlled from the Sound tab; here we
-      // just maintain the routing and a fade envelope.
       try {
         src.node.connect(v.envGain)
-        console.log('[diff] routed Sound voice send → envGain', { send: src.node, envGain: v.envGain, distGain: v.distGain, rSource: v.rSource })
+        // DEBUG: also connect src.node directly to mixer at 0.5 (-6 dB)
+        // to bypass envGain + distGain + Resonance entirely. If this is
+        // audible, the Sound voice's diffusionSend IS producing signal
+        // and the issue is in the per-voice spatializer chain. If still
+        // silent, master is not connected to diffusionSend.
+        if (!v.debugProbe) {
+          v.debugProbe = a.ctx.createGain(); v.debugProbe.gain.value = 0.5
+          v.debugProbe.connect(a.mixer)
+        }
+        src.node.connect(v.debugProbe)
+        console.log('[diff] routed Sound voice send → envGain + debugProbe(0.5→mixer)')
       } catch (err) {
         console.error('[diff] connect failed', err)
       }
