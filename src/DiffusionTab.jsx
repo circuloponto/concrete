@@ -661,7 +661,11 @@ export function DiffusionTab() {
             if (!send) {
               send = a.ctx.createGain()
               send.gain.value = 0
-              av.distGain.connect(send)
+              // Tap from envGain (pre-attenuation) so the effect output's
+              // level isn't multiplied by the dry voice's proximity gain.
+              // The sphere has its own resonance source whose HRTF gives
+              // it its spatial level.
+              av.envGain.connect(send)
               send.connect(entry.inputBus)
               av.sends.set(sp.id, send)
             }
@@ -802,18 +806,20 @@ export function DiffusionTab() {
       }
       return
     }
-    // Select an effect sphere if clicked
-    const sphereHit = raycastEffectSphere()
-    if (sphereHit) {
-      setSelectedSphereId(sphereHit)
-      return
-    }
+    // Voice markers take priority over effect-sphere selection so a click
+    // on a marker inside a sphere starts a drag instead of selecting the
+    // sphere it's enclosed by.
     const idx = raycastVoiceMarker()
     if (idx >= 0) {
       const v = diffRef.current.voices[idx]
       if (!v.trajectoryId || v.trajectoryId < 0) {
         draggingRef.current = idx
+        return
       }
+    }
+    const sphereHit = raycastEffectSphere()
+    if (sphereHit) {
+      setSelectedSphereId(sphereHit)
     }
   }
 
