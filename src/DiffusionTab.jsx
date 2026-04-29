@@ -589,7 +589,6 @@ export function DiffusionTab() {
       return pts
     }
     spheres.forEach(sp => {
-      const color = EFFECT_COLORS[sp.effect] || 0xffffff
       let mesh = s.effectSphereMeshes.get(sp.id)
       if (!mesh) {
         const geom = new THREE.SphereGeometry(1, 16, 12)
@@ -599,7 +598,7 @@ export function DiffusionTab() {
         const mat = new THREE.MeshBasicMaterial({ visible: false })
         mesh = new THREE.Mesh(geom, mat)
         mesh.userData.sphereId = sp.id
-        const ringMat = new THREE.LineBasicMaterial({ color, transparent: true, opacity: 0.6, depthWrite: false })
+        const ringMat = new THREE.LineBasicMaterial({ color: hl, transparent: true, opacity: 0.6, depthWrite: false })
         const eqGeom = new THREE.BufferGeometry().setFromPoints(ringPts('y'))
         const m1Geom = new THREE.BufferGeometry().setFromPoints(ringPts('x'))
         const m2Geom = new THREE.BufferGeometry().setFromPoints(ringPts('z'))
@@ -612,7 +611,7 @@ export function DiffusionTab() {
         s.scene.add(mesh)
         s.effectSphereMeshes.set(sp.id, mesh)
       } else if (mesh.userData.ringMat) {
-        mesh.userData.ringMat.color.setHex(color)
+        mesh.userData.ringMat.color.setHex(hl)
       }
       mesh.position.set(sp.position.x, sp.position.y, sp.position.z)
       mesh.scale.set(sp.radius, sp.radius, sp.radius)
