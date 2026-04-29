@@ -481,8 +481,8 @@ export function DiffusionTab() {
         s.trajectoryLines.forEach(l => { if (l) { l.geometry?.dispose(); l.material?.dispose() } })
         s.effectSphereMeshes.forEach(m => {
           m.geometry?.dispose(); m.material?.dispose()
-          if (m.userData.wireGeom) m.userData.wireGeom.dispose()
-          if (m.userData.wireMat) m.userData.wireMat.dispose()
+          m.userData.ringGeoms?.forEach(g => g.dispose())
+          m.userData.ringMat?.dispose()
         })
         if (s.drawingLine) { s.drawingLine.geometry.dispose(); s.drawingLine.material.dispose() }
         s.disposers.forEach(fn => { try { fn() } catch {} })
@@ -569,43 +569,55 @@ export function DiffusionTab() {
       if (!liveIds.has(id)) {
         s.scene.remove(mesh)
         mesh.geometry?.dispose(); mesh.material?.dispose()
-        if (mesh.userData.wireGeom) mesh.userData.wireGeom.dispose()
-        if (mesh.userData.wireMat) mesh.userData.wireMat.dispose()
+        mesh.userData.ringGeoms?.forEach(g => g.dispose())
+        mesh.userData.ringMat?.dispose()
         s.effectSphereMeshes.delete(id)
         disposeSphereAudio(id)
       }
     })
-    // add / update meshes (filled translucent volume + wireframe overlay so
-    // the 3D shape reads clearly as a sphere from any camera angle)
+    // add / update meshes — three orthogonal ring lines (like the outer
+    // binaural sphere). The actual SphereGeometry mesh is invisible and
+    // only used as a raycast target.
+    const ringPts = (axis) => {
+      const pts = []
+      for (let i = 0; i <= 64; i++) {
+        const a = (i / 64) * Math.PI * 2
+        if (axis === 'y') pts.push(new THREE.Vector3(Math.sin(a), 0, Math.cos(a)))
+        else if (axis === 'x') pts.push(new THREE.Vector3(0, Math.sin(a), Math.cos(a)))
+        else pts.push(new THREE.Vector3(Math.sin(a), Math.cos(a), 0))
+      }
+      return pts
+    }
     spheres.forEach(sp => {
       const color = EFFECT_COLORS[sp.effect] || 0xffffff
       let mesh = s.effectSphereMeshes.get(sp.id)
       if (!mesh) {
-        const geom = new THREE.SphereGeometry(1, 32, 24)
-        const mat = new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.14, depthWrite: false })
+        const geom = new THREE.SphereGeometry(1, 16, 12)
+        // Material.visible = false hides the fill from rendering but keeps
+        // the mesh raycast-testable, so click-select on the rings still
+        // resolves to the parent mesh's userData.sphereId.
+        const mat = new THREE.MeshBasicMaterial({ visible: false })
         mesh = new THREE.Mesh(geom, mat)
         mesh.userData.sphereId = sp.id
-        // Wireframe child — clearly 3D from any angle. Inherits parent
-        // transform so it tracks position + radius scaling automatically.
-        const wireGeom = new THREE.SphereGeometry(1, 16, 12)
-        const wireMat = new THREE.MeshBasicMaterial({ color, wireframe: true, transparent: true, opacity: 0.55, depthWrite: false })
-        const wireMesh = new THREE.Mesh(wireGeom, wireMat)
-        wireMesh.userData.sphereId = sp.id
-        mesh.add(wireMesh)
-        mesh.userData.wireMesh = wireMesh
-        mesh.userData.wireGeom = wireGeom
-        mesh.userData.wireMat = wireMat
+        const ringMat = new THREE.LineBasicMaterial({ color, transparent: true, opacity: 0.6, depthWrite: false })
+        const eqGeom = new THREE.BufferGeometry().setFromPoints(ringPts('y'))
+        const m1Geom = new THREE.BufferGeometry().setFromPoints(ringPts('x'))
+        const m2Geom = new THREE.BufferGeometry().setFromPoints(ringPts('z'))
+        const equator = new THREE.Line(eqGeom, ringMat)
+        const meridian1 = new THREE.Line(m1Geom, ringMat)
+        const meridian2 = new THREE.Line(m2Geom, ringMat)
+        mesh.add(equator); mesh.add(meridian1); mesh.add(meridian2)
+        mesh.userData.ringMat = ringMat
+        mesh.userData.ringGeoms = [eqGeom, m1Geom, m2Geom]
         s.scene.add(mesh)
         s.effectSphereMeshes.set(sp.id, mesh)
-      } else {
-        mesh.material.color.setHex(color)
-        if (mesh.userData.wireMesh) mesh.userData.wireMesh.material.color.setHex(color)
+      } else if (mesh.userData.ringMat) {
+        mesh.userData.ringMat.color.setHex(color)
       }
       mesh.position.set(sp.position.x, sp.position.y, sp.position.z)
       mesh.scale.set(sp.radius, sp.radius, sp.radius)
       const sel = sp.id === selectedSphereId
-      mesh.material.opacity = sel ? 0.28 : 0.12
-      if (mesh.userData.wireMesh) mesh.userData.wireMesh.material.opacity = sel ? 0.85 : 0.45
+      if (mesh.userData.ringMat) mesh.userData.ringMat.opacity = sel ? 0.95 : 0.55
       ensureSphereAudio(sp)
     })
   }, [diffusion, highlight, selectedSphereId, ensureSphereAudio, disposeSphereAudio])
