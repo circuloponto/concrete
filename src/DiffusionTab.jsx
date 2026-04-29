@@ -48,12 +48,33 @@ function hexToInt(hex, fallback = 0x00ff9c) {
 
 const VOICE_COLORS = [0x00ff9c, 0xff6b6b, 0x4ecdc4, 0xffe66d, 0xa29bfe, 0xfd79a8]
 
+const EFFECT_TYPES = ['lowpass', 'highpass', 'bandpass', 'reverb', 'delay', 'ringmod']
+const EFFECT_COLORS = {
+  lowpass: 0xff9c00,
+  highpass: 0x9cff00,
+  bandpass: 0x00ffd5,
+  reverb: 0xff6bff,
+  delay: 0x6b9cff,
+  ringmod: 0xff3b3b,
+}
+const DEFAULT_PARAMS = {
+  lowpass: { cutoff: 800, q: 1 },
+  highpass: { cutoff: 400, q: 1 },
+  bandpass: { cutoff: 1200, q: 4 },
+  reverb: { decay: 1.5, wet: 1 },
+  delay: { time: 0.25, feedback: 0.4, wet: 1 },
+  ringmod: { freq: 220, wet: 1 },
+}
+const newSphereId = () => `sph_${Date.now().toString(36)}_${Math.floor(Math.random() * 1e6).toString(36)}`
+
 export function DiffusionTab() {
   const { diffusion, setDiffusion, getAudioCtx, getBuffer, addPoolItem, pool, highlight, transportRef } = useStore()
   const containerRef = useRef(null)
   const [playing, setPlayingState] = useState(() => Array(MAX_VOICES).fill(false))
   const [recording, setRecording] = useState(false)
   const [drawMode, setDrawMode] = useState(false)
+  const [placeSphereMode, setPlaceSphereMode] = useState(false)
+  const [selectedSphereId, setSelectedSphereId] = useState(null)
   const [captureName, setCaptureName] = useState('binaural')
   const drawingPtsRef = useRef(null)        // [{x,y,z}, ...] unit vectors on the sphere surface, while drawing
   const draggingRef = useRef(null)          // index of voice being dragged
@@ -92,9 +113,17 @@ export function DiffusionTab() {
       distGain.gain.value = 1
       envGain.connect(distGain)
       distGain.connect(rSource.input)
-      return { rSource, envGain, distGain, source: null, routedVoiceIndex: null }
+      // sends: Map<sphereId, GainNode>. distGain ALSO fans out into each
+      // sphere's send (gain ramped 0/1 by distance gating in the rAF tick).
+      // The send connects to the sphere's inputBus → effect chain → that
+      // sphere's own resonance source positioned at sphere.position.
+      return {
+        rSource, envGain, distGain,
+        source: null, routedVoiceIndex: null,
+        sends: new Map(),
+      }
     })
-    audioRef.current = { ctx, mixer, msDest, resonance, voices }
+    audioRef.current = { ctx, mixer, msDest, resonance, voices, spheres: new Map() }
     return audioRef.current
   }, [getAudioCtx])
 
@@ -109,13 +138,127 @@ export function DiffusionTab() {
         transportRef?.current?.voiceRouters?.[v.routedVoiceIndex - 1]?.(false)
         v.routedVoiceIndex = null
       }
+      v.sends.forEach(s => { try { s.disconnect() } catch {} })
+      v.sends.clear()
     })
+    audioRef.current.spheres.forEach(entry => {
+      try { entry.inputBus.disconnect() } catch {}
+      try { entry.wetGain.disconnect() } catch {}
+      if (entry.module) entry.module.dispose()
+    })
+    audioRef.current.spheres.clear()
     try { audioRef.current.resonance.output.disconnect() } catch {}
     try { audioRef.current.mixer.disconnect() } catch {}
     audioRef.current = null
   }, [])
 
   const diffRef = useRef(diffusion); diffRef.current = diffusion
+
+  // ---- Effect-sphere audio: per-sphere chain (inputBus → effect → rSource
+  // at the sphere's position) and a setEffect helper that swaps the effect
+  // module without rebuilding inputBus / rSource.
+  const buildEffectModule = useCallback((ctx, type, params) => {
+    const input = ctx.createGain(); input.gain.value = 1
+    const output = ctx.createGain(); output.gain.value = 1
+    if (type === 'lowpass' || type === 'highpass' || type === 'bandpass') {
+      const f = ctx.createBiquadFilter()
+      f.type = type
+      f.frequency.value = params?.cutoff ?? 800
+      f.Q.value = params?.q ?? 1
+      input.connect(f); f.connect(output)
+      return { input, output, dispose: () => { try { f.disconnect() } catch {} }, kind: type, refs: { f } }
+    }
+    if (type === 'reverb') {
+      const conv = ctx.createConvolver()
+      const decay = Math.max(0.1, params?.decay ?? 1.5)
+      const len = Math.max(1, Math.floor(ctx.sampleRate * decay))
+      const ir = ctx.createBuffer(2, len, ctx.sampleRate)
+      for (let c = 0; c < 2; c++) {
+        const d = ir.getChannelData(c)
+        for (let i = 0; i < len; i++) d[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / len, 2)
+      }
+      conv.buffer = ir
+      const wet = ctx.createGain(); wet.gain.value = params?.wet ?? 1
+      input.connect(conv); conv.connect(wet); wet.connect(output)
+      return { input, output, dispose: () => { try { conv.disconnect() } catch {}; try { wet.disconnect() } catch {} }, kind: 'reverb', refs: { conv, wet } }
+    }
+    if (type === 'delay') {
+      const dly = ctx.createDelay(2.0)
+      dly.delayTime.value = Math.max(0.001, Math.min(2.0, params?.time ?? 0.25))
+      const fb = ctx.createGain(); fb.gain.value = Math.max(0, Math.min(0.95, params?.feedback ?? 0.4))
+      const wet = ctx.createGain(); wet.gain.value = params?.wet ?? 1
+      input.connect(dly); dly.connect(fb); fb.connect(dly); dly.connect(wet); wet.connect(output)
+      return { input, output, dispose: () => { try { dly.disconnect() } catch {}; try { fb.disconnect() } catch {}; try { wet.disconnect() } catch {} }, kind: 'delay', refs: { dly, fb, wet } }
+    }
+    if (type === 'ringmod') {
+      const osc = ctx.createOscillator()
+      osc.frequency.value = params?.freq ?? 220
+      const ringG = ctx.createGain(); ringG.gain.value = 0
+      osc.connect(ringG.gain); osc.start()
+      const wet = ctx.createGain(); wet.gain.value = params?.wet ?? 1
+      input.connect(ringG); ringG.connect(wet); wet.connect(output)
+      return { input, output, dispose: () => { try { osc.stop() } catch {}; try { osc.disconnect() } catch {}; try { ringG.disconnect() } catch {}; try { wet.disconnect() } catch {} }, kind: 'ringmod', refs: { osc, ringG, wet } }
+    }
+    // unknown: passthrough
+    input.connect(output)
+    return { input, output, dispose: () => {}, kind: 'passthrough', refs: {} }
+  }, [])
+
+  // Build / rebuild per-sphere audio chain. Idempotent: reuses inputBus and
+  // rSource across effect-type swaps, only the inner effect module is rebuilt.
+  const ensureSphereAudio = useCallback((sph) => {
+    const a = audioRef.current
+    if (!a) return null
+    let entry = a.spheres.get(sph.id)
+    if (!entry) {
+      const inputBus = a.ctx.createGain(); inputBus.gain.value = 1
+      const rSource = a.resonance.createSource()
+      rSource.setRolloff('none')
+      const wetGain = a.ctx.createGain(); wetGain.gain.value = 1
+      wetGain.connect(rSource.input)
+      entry = { inputBus, wetGain, rSource, module: null, type: null }
+      a.spheres.set(sph.id, entry)
+    }
+    if (entry.type !== sph.effect) {
+      if (entry.module) {
+        try { entry.inputBus.disconnect() } catch {}
+        try { entry.module.output.disconnect() } catch {}
+        entry.module.dispose()
+      }
+      const mod = buildEffectModule(a.ctx, sph.effect, sph.params)
+      entry.inputBus.connect(mod.input)
+      mod.output.connect(entry.wetGain)
+      entry.module = mod
+      entry.type = sph.effect
+    } else {
+      // Same effect type, parameter update — re-apply live params.
+      const refs = entry.module.refs || {}
+      const p = sph.params || {}
+      if (refs.f) { refs.f.frequency.value = p.cutoff ?? refs.f.frequency.value; refs.f.Q.value = p.q ?? refs.f.Q.value }
+      if (refs.dly) { refs.dly.delayTime.value = Math.max(0.001, Math.min(2, p.time ?? refs.dly.delayTime.value)) }
+      if (refs.fb) { refs.fb.gain.value = Math.max(0, Math.min(0.95, p.feedback ?? refs.fb.gain.value)) }
+      if (refs.osc) { refs.osc.frequency.value = p.freq ?? refs.osc.frequency.value }
+      if (refs.wet) { refs.wet.gain.value = p.wet ?? refs.wet.gain.value }
+    }
+    entry.rSource.setPosition(sph.position.x * (diffRef.current.radius || 4), sph.position.y * (diffRef.current.radius || 4), -sph.position.z * (diffRef.current.radius || 4))
+    return entry
+  }, [buildEffectModule])
+
+  const disposeSphereAudio = useCallback((sphId) => {
+    const a = audioRef.current
+    if (!a) return
+    const entry = a.spheres.get(sphId)
+    if (!entry) return
+    try { entry.inputBus.disconnect() } catch {}
+    if (entry.module) entry.module.dispose()
+    try { entry.wetGain.disconnect() } catch {}
+    a.spheres.delete(sphId)
+    // remove sends from each voice that pointed at this sphere
+    a.voices.forEach(v => {
+      const s = v.sends.get(sphId)
+      if (s) { try { s.disconnect() } catch {} ; v.sends.delete(sphId) }
+    })
+  }, [])
 
   const FADE_SEC = 0.012
   // Resolve a poolId to either a Sound voice send tap (if it begins with
@@ -307,6 +450,7 @@ export function DiffusionTab() {
       ndc: new THREE.Vector2(),
       voiceMarkers: [],
       trajectoryLines: [],
+      effectSphereMeshes: new Map(), // sphereId → THREE.Mesh
       drawingLine: null,
       disposers: [
         () => { sphereGeom.dispose(); sphereMat.dispose() },
@@ -335,6 +479,7 @@ export function DiffusionTab() {
       if (s) {
         s.voiceMarkers.forEach(m => { m.geometry?.dispose(); m.material?.dispose() })
         s.trajectoryLines.forEach(l => { if (l) { l.geometry?.dispose(); l.material?.dispose() } })
+        s.effectSphereMeshes.forEach(m => { m.geometry?.dispose(); m.material?.dispose() })
         if (s.drawingLine) { s.drawingLine.geometry.dispose(); s.drawingLine.material.dispose() }
         s.disposers.forEach(fn => { try { fn() } catch {} })
         s.renderer.dispose()
@@ -411,10 +556,43 @@ export function DiffusionTab() {
       s.pathsGroup.add(mesh)
       s.trajectoryLines[ti] = mesh
     })
-  }, [diffusion, highlight])
+
+    // sync effect spheres: visual meshes + audio chains
+    const spheres = diffusion.effectSpheres || []
+    const liveIds = new Set(spheres.map(sp => sp.id))
+    // remove meshes / audio for spheres that no longer exist
+    s.effectSphereMeshes.forEach((mesh, id) => {
+      if (!liveIds.has(id)) {
+        s.scene.remove(mesh)
+        mesh.geometry?.dispose(); mesh.material?.dispose()
+        s.effectSphereMeshes.delete(id)
+        disposeSphereAudio(id)
+      }
+    })
+    // add / update meshes
+    spheres.forEach(sp => {
+      const color = EFFECT_COLORS[sp.effect] || 0xffffff
+      let mesh = s.effectSphereMeshes.get(sp.id)
+      if (!mesh) {
+        const geom = new THREE.SphereGeometry(1, 24, 18)
+        const mat = new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.18, depthWrite: false })
+        mesh = new THREE.Mesh(geom, mat)
+        mesh.userData.sphereId = sp.id
+        s.scene.add(mesh)
+        s.effectSphereMeshes.set(sp.id, mesh)
+      } else {
+        mesh.material.color.setHex(color)
+      }
+      mesh.position.set(sp.position.x, sp.position.y, sp.position.z)
+      mesh.scale.set(sp.radius, sp.radius, sp.radius)
+      mesh.material.opacity = sp.id === selectedSphereId ? 0.32 : 0.16
+      ensureSphereAudio(sp)
+    })
+  }, [diffusion, highlight, selectedSphereId, ensureSphereAudio, disposeSphereAudio])
 
   // ---- rAF loop: rotation phase, audio panners, render ----
   const drawModeRef = useRef(drawMode); drawModeRef.current = drawMode
+  const placeSphereModeRef = useRef(placeSphereMode); placeSphereModeRef.current = placeSphereMode
   const phaseRef = useRef(0)
   // Per-voice traversal phase ∈ [0, 1). Each voice advances at its own rate
   // dt * speed / globalPeriod, independent of the sphere's visual phi. Refs
@@ -438,8 +616,9 @@ export function DiffusionTab() {
       const phi = phaseRef.current
       s.sphereGroup.rotation.y = phi
       // Keep camera zoom (wheel) always available; rotate is disabled while
-      // drawing or dragging a voice so dragging doesn't orbit the camera.
-      s.controls.enableRotate = !drawModeRef.current && draggingRef.current === null
+      // drawing or dragging a voice or placing an effect sphere so the
+      // gesture doesn't orbit the camera by accident.
+      s.controls.enableRotate = !drawModeRef.current && draggingRef.current === null && !placeSphereModeRef.current
       s.controls.update()
       // Paths render at unit radius (sphere surface). Per-voice depth is
       // applied to each voice marker individually below.
@@ -470,6 +649,35 @@ export function DiffusionTab() {
           const mag = Math.max(0.0001, Math.hypot(pt.x, pt.y, pt.z))
           const ratio = 0.25 / mag
           a.voices[i].distGain.gain.value = Math.max(0.05, Math.min(1, ratio * ratio))
+          // Effect-sphere gating: for each sphere, ramp this voice's send
+          // toward 1 if voice's current position is inside the sphere,
+          // else toward 0. setTargetAtTime gives a click-free crossfade.
+          const av = a.voices[i]
+          const spheres = d.effectSpheres || []
+          spheres.forEach(sp => {
+            const entry = a.spheres.get(sp.id)
+            if (!entry) return
+            let send = av.sends.get(sp.id)
+            if (!send) {
+              send = a.ctx.createGain()
+              send.gain.value = 0
+              av.distGain.connect(send)
+              send.connect(entry.inputBus)
+              av.sends.set(sp.id, send)
+            }
+            const dx = pt.x - sp.position.x, dy = pt.y - sp.position.y, dz = pt.z - sp.position.z
+            const inside = (dx * dx + dy * dy + dz * dz) <= sp.radius * sp.radius
+            send.gain.setTargetAtTime(inside ? 1 : 0, a.ctx.currentTime, 0.04)
+          })
+          // Drop sends for spheres that no longer exist (defensive — sync
+          // effect normally cleans these, but guards against late removal).
+          const liveIds = new Set(spheres.map(sp => sp.id))
+          av.sends.forEach((send, id) => {
+            if (!liveIds.has(id)) {
+              try { send.disconnect() } catch {}
+              av.sends.delete(id)
+            }
+          })
         }
       })
 
@@ -549,11 +757,35 @@ export function DiffusionTab() {
     return s.voiceMarkers.indexOf(hits[0].object)
   }
 
+  const raycastEffectSphere = () => {
+    const s = sceneRef.current
+    if (!s || !s.effectSphereMeshes.size) return null
+    s.raycaster.setFromCamera(s.ndc, s.camera)
+    const meshes = Array.from(s.effectSphereMeshes.values())
+    const hits = s.raycaster.intersectObjects(meshes, false)
+    if (!hits.length) return null
+    return hits[0].object.userData.sphereId
+  }
+
   const onPointerDown = (e) => {
     if (!setNDC(e)) return
     e.currentTarget.setPointerCapture(e.pointerId)
     const s = sceneRef.current
     if (!s) return
+    if (placeSphereMode) {
+      const p = pointer3D()
+      if (!p) return
+      const id = newSphereId()
+      setDiffusion(prev => ({
+        ...prev,
+        effectSpheres: [...(prev.effectSpheres || []), {
+          id, position: p, radius: 0.2, effect: 'lowpass', params: { ...DEFAULT_PARAMS.lowpass },
+        }],
+      }))
+      setPlaceSphereMode(false)
+      setSelectedSphereId(id)
+      return
+    }
     if (drawMode) {
       const p = pointer3D()
       if (!p) return
@@ -568,6 +800,12 @@ export function DiffusionTab() {
         s.drawingLine.renderOrder = 6
         s.pathsGroup.add(s.drawingLine)
       }
+      return
+    }
+    // Select an effect sphere if clicked
+    const sphereHit = raycastEffectSphere()
+    if (sphereHit) {
+      setSelectedSphereId(sphereHit)
       return
     }
     const idx = raycastVoiceMarker()
@@ -650,9 +888,28 @@ export function DiffusionTab() {
     setDiffusion(prev => { const nv = prev.voices.slice(); nv[i] = { ...nv[i], [prop]: val }; return { ...prev, voices: nv } })
   }
 
+  const updateSphere = (id, patch) => {
+    setDiffusion(prev => ({
+      ...prev,
+      effectSpheres: (prev.effectSpheres || []).map(sp => sp.id === id ? { ...sp, ...patch, params: { ...(sp.params || {}), ...(patch.params || {}) } } : sp),
+    }))
+  }
+  const setSphereEffect = (id, effect) => {
+    setDiffusion(prev => ({
+      ...prev,
+      effectSpheres: (prev.effectSpheres || []).map(sp => sp.id === id ? { ...sp, effect, params: { ...DEFAULT_PARAMS[effect] } } : sp),
+    }))
+  }
+  const deleteSphere = (id) => {
+    setDiffusion(prev => ({ ...prev, effectSpheres: (prev.effectSpheres || []).filter(sp => sp.id !== id) }))
+    if (selectedSphereId === id) setSelectedSphereId(null)
+  }
+
   const radius = diffusion.radius || 4
   const rotationPeriodSec = diffusion.rotationPeriodSec || 8
   const trajectories = diffusion.trajectories || []
+  const effectSpheres = diffusion.effectSpheres || []
+  const selectedSphere = effectSpheres.find(sp => sp.id === selectedSphereId)
 
   return (
     <div className="diffusion-tab">
@@ -674,6 +931,10 @@ export function DiffusionTab() {
           setDrawMode(!drawMode)
         }}>
           {drawMode ? '✎ Drawing...' : '✎ Draw path'}
+        </button>
+        <button className={placeSphereMode ? 'active' : ''} onClick={() => setPlaceSphereMode(v => !v)}
+          title="click on the diffusion sphere to drop an effect zone">
+          {placeSphereMode ? '⊕ Click to place...' : '⊕ Effect sphere'}
         </button>
         <label style={{ fontSize: 10, color: 'var(--dim)', textTransform: 'uppercase', letterSpacing: 1, marginLeft: 8 }}>Period</label>
         <input type="range" min="0.5" max="60" step="0.1" value={rotationPeriodSec} onChange={e => setDiffusion(prev => ({ ...prev, rotationPeriodSec: +e.target.value }))} style={{ width: 80 }} />
@@ -746,6 +1007,93 @@ export function DiffusionTab() {
                   <button className="pool-btn pool-btn-del" onClick={() => deleteTrajectory(ti)} title="delete">×</button>
                 </div>
               ))}
+            </div>
+          )}
+          {effectSpheres.length > 0 && (
+            <div className="panel diffusion-voice-panel">
+              <h4>Effect spheres
+                {selectedSphere && <button className="tiny-toggle" onClick={() => setSelectedSphereId(null)} title="clear selection">×</button>}
+              </h4>
+              {effectSpheres.map((sp, idx) => {
+                const isSel = sp.id === selectedSphereId
+                return (
+                  <div key={sp.id} className="row" style={{ borderTop: idx > 0 ? '1px solid var(--border)' : 'none', paddingTop: idx > 0 ? 4 : 0 }}>
+                    <button className={'tiny-toggle' + (isSel ? ' active' : '')}
+                      style={{ background: `#${EFFECT_COLORS[sp.effect]?.toString(16).padStart(6, '0')}33` }}
+                      onClick={() => setSelectedSphereId(isSel ? null : sp.id)}>{idx + 1}</button>
+                    <span className="value" style={{ flex: 1, marginLeft: 4 }}>{sp.effect}</span>
+                    <button className="pool-btn pool-btn-del" onClick={() => deleteSphere(sp.id)} title="delete">×</button>
+                  </div>
+                )
+              })}
+              {selectedSphere && (
+                <div style={{ marginTop: 6, paddingTop: 6, borderTop: '1px solid var(--border)' }}>
+                  <div className="row">
+                    <label>Effect</label>
+                    <select className="select-inline" value={selectedSphere.effect}
+                      onChange={e => setSphereEffect(selectedSphere.id, e.target.value)}>
+                      {EFFECT_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
+                    </select>
+                  </div>
+                  <div className="row">
+                    <label>Radius</label>
+                    <input className="slider" type="range" min="0.05" max="0.8" step="0.01" value={selectedSphere.radius}
+                      onChange={e => updateSphere(selectedSphere.id, { radius: +e.target.value })} />
+                    <span className="value">{(selectedSphere.radius * 100).toFixed(0)}%</span>
+                  </div>
+                  {(selectedSphere.effect === 'lowpass' || selectedSphere.effect === 'highpass' || selectedSphere.effect === 'bandpass') && (
+                    <>
+                      <div className="row">
+                        <label>Cutoff</label>
+                        <input className="slider" type="range" min="40" max="18000" step="1" value={selectedSphere.params?.cutoff ?? 800}
+                          onChange={e => updateSphere(selectedSphere.id, { params: { cutoff: +e.target.value } })} />
+                        <span className="value">{(selectedSphere.params?.cutoff ?? 800).toFixed(0)} Hz</span>
+                      </div>
+                      <div className="row">
+                        <label>Q</label>
+                        <input className="slider" type="range" min="0.1" max="20" step="0.1" value={selectedSphere.params?.q ?? 1}
+                          onChange={e => updateSphere(selectedSphere.id, { params: { q: +e.target.value } })} />
+                        <span className="value">{(selectedSphere.params?.q ?? 1).toFixed(1)}</span>
+                      </div>
+                    </>
+                  )}
+                  {selectedSphere.effect === 'reverb' && (
+                    <div className="row">
+                      <label>Decay</label>
+                      <input className="slider" type="range" min="0.1" max="6" step="0.05" value={selectedSphere.params?.decay ?? 1.5}
+                        onChange={e => setDiffusion(prev => ({
+                          ...prev,
+                          effectSpheres: (prev.effectSpheres || []).map(sp => sp.id === selectedSphere.id ? { ...sp, params: { ...sp.params, decay: +e.target.value } } : sp),
+                        }))} />
+                      <span className="value">{(selectedSphere.params?.decay ?? 1.5).toFixed(2)} s</span>
+                    </div>
+                  )}
+                  {selectedSphere.effect === 'delay' && (
+                    <>
+                      <div className="row">
+                        <label>Time</label>
+                        <input className="slider" type="range" min="0.01" max="2" step="0.01" value={selectedSphere.params?.time ?? 0.25}
+                          onChange={e => updateSphere(selectedSphere.id, { params: { time: +e.target.value } })} />
+                        <span className="value">{(selectedSphere.params?.time ?? 0.25).toFixed(2)} s</span>
+                      </div>
+                      <div className="row">
+                        <label>Feedback</label>
+                        <input className="slider" type="range" min="0" max="0.95" step="0.01" value={selectedSphere.params?.feedback ?? 0.4}
+                          onChange={e => updateSphere(selectedSphere.id, { params: { feedback: +e.target.value } })} />
+                        <span className="value">{((selectedSphere.params?.feedback ?? 0.4) * 100).toFixed(0)}%</span>
+                      </div>
+                    </>
+                  )}
+                  {selectedSphere.effect === 'ringmod' && (
+                    <div className="row">
+                      <label>Freq</label>
+                      <input className="slider" type="range" min="20" max="4000" step="1" value={selectedSphere.params?.freq ?? 220}
+                        onChange={e => updateSphere(selectedSphere.id, { params: { freq: +e.target.value } })} />
+                      <span className="value">{(selectedSphere.params?.freq ?? 220).toFixed(0)} Hz</span>
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
           )}
         </div>

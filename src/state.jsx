@@ -157,6 +157,7 @@ function defaultDiffusion() {
     radius: 4,
     rotationPeriodSec: 8,
     trajectories: [],
+    effectSpheres: [],
     voices: Array.from({ length: MAX_VOICES }, (_, i) => {
       const a = (i / MAX_VOICES) * Math.PI * 2 - Math.PI / 2
       return {
@@ -227,7 +228,18 @@ function migrateDiffusion(d) {
     if (points.length < 2) return null
     return { points, name: traj.name }
   }).filter(Boolean)
-  return { enabled, radius, rotationPeriodSec, voices, trajectories }
+  const effectSpheres = (d.effectSpheres || []).map(s => ({
+    id: s.id || `sph_${Math.random().toString(36).slice(2, 8)}`,
+    position: {
+      x: s.position?.x ?? 0,
+      y: s.position?.y ?? 0,
+      z: s.position?.z ?? 0,
+    },
+    radius: typeof s.radius === 'number' ? Math.max(0.05, Math.min(0.8, s.radius)) : 0.2,
+    effect: s.effect || 'lowpass',
+    params: s.params || {},
+  }))
+  return { enabled, radius, rotationPeriodSec, voices, trajectories, effectSpheres }
 }
 
 const defaultSoundState = () => ({
