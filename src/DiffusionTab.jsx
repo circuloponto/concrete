@@ -479,7 +479,11 @@ export function DiffusionTab() {
       if (s) {
         s.voiceMarkers.forEach(m => { m.geometry?.dispose(); m.material?.dispose() })
         s.trajectoryLines.forEach(l => { if (l) { l.geometry?.dispose(); l.material?.dispose() } })
-        s.effectSphereMeshes.forEach(m => { m.geometry?.dispose(); m.material?.dispose() })
+        s.effectSphereMeshes.forEach(m => {
+          m.geometry?.dispose(); m.material?.dispose()
+          if (m.userData.wireGeom) m.userData.wireGeom.dispose()
+          if (m.userData.wireMat) m.userData.wireMat.dispose()
+        })
         if (s.drawingLine) { s.drawingLine.geometry.dispose(); s.drawingLine.material.dispose() }
         s.disposers.forEach(fn => { try { fn() } catch {} })
         s.renderer.dispose()
@@ -565,27 +569,43 @@ export function DiffusionTab() {
       if (!liveIds.has(id)) {
         s.scene.remove(mesh)
         mesh.geometry?.dispose(); mesh.material?.dispose()
+        if (mesh.userData.wireGeom) mesh.userData.wireGeom.dispose()
+        if (mesh.userData.wireMat) mesh.userData.wireMat.dispose()
         s.effectSphereMeshes.delete(id)
         disposeSphereAudio(id)
       }
     })
-    // add / update meshes
+    // add / update meshes (filled translucent volume + wireframe overlay so
+    // the 3D shape reads clearly as a sphere from any camera angle)
     spheres.forEach(sp => {
       const color = EFFECT_COLORS[sp.effect] || 0xffffff
       let mesh = s.effectSphereMeshes.get(sp.id)
       if (!mesh) {
-        const geom = new THREE.SphereGeometry(1, 24, 18)
-        const mat = new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.18, depthWrite: false })
+        const geom = new THREE.SphereGeometry(1, 32, 24)
+        const mat = new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.14, depthWrite: false })
         mesh = new THREE.Mesh(geom, mat)
         mesh.userData.sphereId = sp.id
+        // Wireframe child — clearly 3D from any angle. Inherits parent
+        // transform so it tracks position + radius scaling automatically.
+        const wireGeom = new THREE.SphereGeometry(1, 16, 12)
+        const wireMat = new THREE.MeshBasicMaterial({ color, wireframe: true, transparent: true, opacity: 0.55, depthWrite: false })
+        const wireMesh = new THREE.Mesh(wireGeom, wireMat)
+        wireMesh.userData.sphereId = sp.id
+        mesh.add(wireMesh)
+        mesh.userData.wireMesh = wireMesh
+        mesh.userData.wireGeom = wireGeom
+        mesh.userData.wireMat = wireMat
         s.scene.add(mesh)
         s.effectSphereMeshes.set(sp.id, mesh)
       } else {
         mesh.material.color.setHex(color)
+        if (mesh.userData.wireMesh) mesh.userData.wireMesh.material.color.setHex(color)
       }
       mesh.position.set(sp.position.x, sp.position.y, sp.position.z)
       mesh.scale.set(sp.radius, sp.radius, sp.radius)
-      mesh.material.opacity = sp.id === selectedSphereId ? 0.32 : 0.16
+      const sel = sp.id === selectedSphereId
+      mesh.material.opacity = sel ? 0.28 : 0.12
+      if (mesh.userData.wireMesh) mesh.userData.wireMesh.material.opacity = sel ? 0.85 : 0.45
       ensureSphereAudio(sp)
     })
   }, [diffusion, highlight, selectedSphereId, ensureSphereAudio, disposeSphereAudio])
