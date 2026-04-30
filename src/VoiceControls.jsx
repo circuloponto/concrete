@@ -566,6 +566,21 @@ export function VoiceControls({ voice }) {
             <ModRow voice={v} pKey="voiceGain" label="Gain" min={0} max={1.5} step={0.01} value={v.voiceGain} onChange={v.setVoiceGain} format={fmtPct} />
           </div>
           <div className="panel">
+            <h4>Sample delay
+              <button
+                className={'tiny-toggle' + (v.sampleDelayActive ? ' active' : '')}
+                onClick={() => v.setSampleDelayActive(!v.sampleDelayActive)}
+                title="enable per-channel sample delay (Logic-style)"
+              >{v.sampleDelayActive ? 'on' : 'off'}</button>
+            </h4>
+            <Row label="L" value={v.sampleDelayL} unit="smp">
+              <Slider min={0} max={4000} step={1} value={v.sampleDelayL} onChange={v.setSampleDelayL} />
+            </Row>
+            <Row label="R" value={v.sampleDelayR} unit="smp">
+              <Slider min={0} max={4000} step={1} value={v.sampleDelayR} onChange={v.setSampleDelayR} />
+            </Row>
+          </div>
+          <div className="panel">
             <h4>Print</h4>
             <Row label="Length" value={v.printDurationSec} unit="s">
               <Slider min={10} max={120} step={1} value={v.printDurationSec} onChange={v.setPrintDurationSec} />

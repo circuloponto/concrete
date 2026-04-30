@@ -67,6 +67,12 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
   const [tempo, setTempo] = useState(initial.tempo ?? 1)
   const [pitch, setPitch] = useState(initial.pitch ?? 0)
   const [voiceGain, setVoiceGain] = useState(initial.voiceGain ?? 1)
+  // Logic-style per-channel sample delay sitting between master and the
+  // outputs (directOut / diffusionSend / printDest). Useful for Haas
+  // widening or creative comb effects.
+  const [sampleDelayActive, setSampleDelayActive] = useState(initial.sampleDelayActive ?? false)
+  const [sampleDelayL, setSampleDelayL] = useState(initial.sampleDelayL ?? 0)
+  const [sampleDelayR, setSampleDelayR] = useState(initial.sampleDelayR ?? 0)
   const [satActive, setSatActive] = useState(initial.satActive ?? true)
   const [saturation, setSaturation] = useState(initial.saturation ?? 0)
   const [wowActive, setWowActive] = useState(initial.wowActive ?? true)
@@ -624,6 +630,22 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
       cqFilters.length = 0
     }
     const master = G(voiceGain)
+    // Sample-delay insert. Built once; delay times are written from the
+    // useEffect below so toggling sampleDelayActive doesn't rebuild the
+    // chain. ChannelSplitter/Merger preserve stereo even at 0-sample delay.
+    const sdIn = G(1)
+    const sdOut = G(1)
+    const sdSplit = ctx.createChannelSplitter(2)
+    const sdMerge = ctx.createChannelMerger(2)
+    const sdDlyL = ctx.createDelay(1.0)
+    const sdDlyR = ctx.createDelay(1.0)
+    const sdActiveInit = sampleDelayActive
+    sdDlyL.delayTime.value = sdActiveInit ? Math.max(0, sampleDelayL) / ctx.sampleRate : 0
+    sdDlyR.delayTime.value = sdActiveInit ? Math.max(0, sampleDelayR) / ctx.sampleRate : 0
+    sdIn.connect(sdSplit)
+    sdSplit.connect(sdDlyL, 0); sdSplit.connect(sdDlyR, 1)
+    sdDlyL.connect(sdMerge, 0, 0); sdDlyR.connect(sdMerge, 0, 1)
+    sdMerge.connect(sdOut)
 
     // ---- Build each effect as a self-contained module {input, output, ...nodes} ----
     const modules = {}
@@ -1195,9 +1217,14 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
         if (i < order.length - 1) g.connect(modules[order[i + 1]].input)
         else g.connect(master)
       }
-      master.connect(directOut)
-      master.connect(printDest)
-      master.connect(diffusionSend)
+      // Sample-delay insert (Logic-style): master → splitter → 2 delays
+      // → merger → sdOut → all downstream taps. When sampleDelayActive
+      // is false, both delay times are 0 (transparent); when true the
+      // L/R values drive each channel's delayTime independently.
+      master.connect(sdIn)
+      sdOut.connect(directOut)
+      sdOut.connect(printDest)
+      sdOut.connect(diffusionSend)
     }
     // Parallel tap on the voice master for the Print feature. A private
     // MediaStreamAudioDestinationNode receives exactly what outputNode gets
@@ -1220,6 +1247,7 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
       master, oscs, modules, wireChain,
       effectGainNodes,
       printDest,
+      sdDlyL, sdDlyR,
     }
     // Signal to the LFO router useEffect that fresh nodes are available.
     setNodesReadyV(v => v + 1)
@@ -1293,6 +1321,18 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
   useEffect(() => {
     if (nodesRef.current?.wireChain) nodesRef.current.wireChain()
   }, [effectOrder])
+
+  // live-update sample-delay times (in samples → seconds via sampleRate).
+  useEffect(() => {
+    const n = nodesRef.current
+    if (!n?.sdDlyL || !n?.sdDlyR) return
+    const sr = getAudioCtx().sampleRate
+    const lSec = sampleDelayActive ? Math.max(0, sampleDelayL) / sr : 0
+    const rSec = sampleDelayActive ? Math.max(0, sampleDelayR) / sr : 0
+    const t = getAudioCtx().currentTime
+    n.sdDlyL.delayTime.setTargetAtTime(lSec, t, 0.005)
+    n.sdDlyR.delayTime.setTargetAtTime(rSec, t, 0.005)
+  }, [sampleDelayActive, sampleDelayL, sampleDelayR, getAudioCtx])
 
   // Keep loop bounds in a ref so the play-tick closure picks up live edits
   // (e.g. dragging loop handles during playback) without having to restart.
@@ -1459,6 +1499,7 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
       effectGains,
       printDurationSec, printedSwap,
       modulators,
+      sampleDelayActive, sampleDelayL, sampleDelayR,
     })
   }, [onSnapshot,
     loadedPoolId, tempo, pitch, voiceGain, reversed, loopStart, loopEnd, view,
@@ -1485,6 +1526,7 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
     effectGains,
     printDurationSec, printedSwap,
     modulators,
+    sampleDelayActive, sampleDelayL, sampleDelayR,
   ])
 
   // Live updates
@@ -2216,5 +2258,8 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
     play, stop, onScrub, toggleReverse, loadFromPool,
     randomize, reset,
     diffusionSend, setDiffusionRouted,
+    sampleDelayActive, setSampleDelayActive,
+    sampleDelayL, setSampleDelayL,
+    sampleDelayR, setSampleDelayR,
   }
 }

@@ -24,6 +24,11 @@ export const defaultVoice = () => ({
   tempo: 1,
   pitch: 0,
   voiceGain: 1,
+  // Logic-style per-channel sample delay on the master output. 0..4000
+  // samples per side; widely used for Haas widening and time alignment.
+  sampleDelayActive: false,
+  sampleDelayL: 0,
+  sampleDelayR: 0,
   reversed: false,
   loopStart: 0,
   loopEnd: 1,
