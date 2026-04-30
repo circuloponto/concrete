@@ -1,4 +1,4 @@
-import React, { useRef, useState, useEffect, useLayoutEffect } from 'react'
+import React, { useRef, useState, useEffect, useLayoutEffect, useCallback } from 'react'
 import { DEFAULT_MOD } from './modulation'
 import { useStore } from './state'
 import { themeColor } from './audio'
@@ -75,8 +75,114 @@ function FreezeXY({ voice }) {
   )
 }
 
+// 10-band graphic EQ — fixed ISO centers, draggable per-band gain dots,
+// curve interpolated between the points. The actual filtering happens
+// in useVoice; this is just sculpting input.
+const GEQ_FREQS = [31.5, 63, 125, 250, 500, 1000, 2000, 4000, 8000, 16000]
+function GeqCanvas({ active, gains, onGainChange, onReset }) {
+  const canvasRef = useRef(null)
+  const draggingRef = useRef(null)
+  const W = 320, H = 110
+  const minDb = -18, maxDb = 18
+  const padX = 14, padY = 8
+  const xForBand = (i) => padX + i * (W - 2 * padX) / (GEQ_FREQS.length - 1)
+  const yForGain = (g) => padY + (1 - (g - minDb) / (maxDb - minDb)) * (H - 2 * padY)
+  const gainForY = (y) => maxDb - ((y - padY) / (H - 2 * padY)) * (maxDb - minDb)
+  const draw = useCallback(() => {
+    const c = canvasRef.current; if (!c) return
+    const ctx = c.getContext('2d')
+    const hl = getComputedStyle(c).getPropertyValue('--hl').trim() || '#00ff9c'
+    const dim = 'rgba(255,255,255,0.08)'
+    ctx.clearRect(0, 0, W, H)
+    ctx.fillStyle = 'rgba(0,0,0,0.18)'; ctx.fillRect(0, 0, W, H)
+    ctx.strokeStyle = dim; ctx.lineWidth = 1
+    for (let db = minDb; db <= maxDb; db += 6) {
+      const y = yForGain(db)
+      ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke()
+    }
+    ctx.strokeStyle = 'rgba(255,255,255,0.18)'
+    ctx.beginPath(); ctx.moveTo(0, yForGain(0)); ctx.lineTo(W, yForGain(0)); ctx.stroke()
+    // smooth curve through points
+    ctx.strokeStyle = active ? hl : 'rgba(255,255,255,0.3)'
+    ctx.lineWidth = 1.5
+    ctx.beginPath()
+    for (let i = 0; i < GEQ_FREQS.length; i++) {
+      const x = xForBand(i)
+      const y = yForGain(active ? (gains[i] ?? 0) : 0)
+      if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y)
+    }
+    ctx.stroke()
+    // dots
+    for (let i = 0; i < GEQ_FREQS.length; i++) {
+      const x = xForBand(i)
+      const y = yForGain(active ? (gains[i] ?? 0) : 0)
+      ctx.fillStyle = active ? hl : 'rgba(255,255,255,0.3)'
+      ctx.beginPath(); ctx.arc(x, y, 3.5, 0, Math.PI * 2); ctx.fill()
+    }
+    // freq labels
+    ctx.fillStyle = 'rgba(255,255,255,0.4)'; ctx.font = '8px monospace'; ctx.textAlign = 'center'
+    GEQ_FREQS.forEach((f, i) => {
+      const label = f >= 1000 ? `${(f / 1000) | 0}k` : `${f | 0}`
+      ctx.fillText(label, xForBand(i), H - 1)
+    })
+  }, [active, gains])
+  useEffect(() => { draw() }, [draw])
+  const nearestBand = (px) => {
+    let best = 0, mind = Infinity
+    for (let i = 0; i < GEQ_FREQS.length; i++) {
+      const d = Math.abs(xForBand(i) - px)
+      if (d < mind) { mind = d; best = i }
+    }
+    return best
+  }
+  const onPointerDown = (e) => {
+    if (!active) return
+    e.currentTarget.setPointerCapture(e.pointerId)
+    const r = canvasRef.current.getBoundingClientRect()
+    const px = (e.clientX - r.left) * W / r.width
+    const py = (e.clientY - r.top) * H / r.height
+    const i = nearestBand(px)
+    draggingRef.current = i
+    onGainChange(i, Math.max(minDb, Math.min(maxDb, gainForY(py))))
+  }
+  const onPointerMove = (e) => {
+    if (draggingRef.current == null) return
+    const r = canvasRef.current.getBoundingClientRect()
+    const py = (e.clientY - r.top) * H / r.height
+    onGainChange(draggingRef.current, Math.max(minDb, Math.min(maxDb, gainForY(py))))
+  }
+  const onPointerUp = () => { draggingRef.current = null }
+  const onDoubleClick = (e) => {
+    if (!active) return
+    const r = canvasRef.current.getBoundingClientRect()
+    const px = (e.clientX - r.left) * W / r.width
+    onGainChange(nearestBand(px), 0)
+  }
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+      <canvas
+        ref={canvasRef}
+        width={W}
+        height={H}
+        style={{ width: '100%', height: H, cursor: active ? 'ns-resize' : 'default', borderRadius: 2, opacity: active ? 1 : 0.55 }}
+        onPointerDown={onPointerDown}
+        onPointerMove={onPointerMove}
+        onPointerUp={onPointerUp}
+        onPointerCancel={onPointerUp}
+        onDoubleClick={onDoubleClick}
+        title="drag bands · double-click to reset a band"
+      />
+      <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 9, color: 'var(--dim)' }}>
+        <span>±18 dB · double-click resets band</span>
+        <button className="tiny-toggle" onClick={onReset} disabled={!active} title="reset all bands">flatten</button>
+      </div>
+    </div>
+  )
+}
+
 const EFFECT_LABELS = {
-  saturation: 'Saturation', wow: 'Wow/Flutter', filter: 'Filter', ringmod: 'Ring Mod', tremolo: 'Tremolo',
+  saturation: 'Saturation', wow: 'Wow/Flutter', filter: 'Filter', geq: 'Graphic EQ',
+  ringmod: 'Ring Mod', tremolo: 'Tremolo',
   flanger: 'Flanger', delay: 'Tape Delay', reverb: 'Reverb', granulator: 'Granulator', freeze: 'Freeze',
   doppler: 'Doppler', banddoppler: 'Band Doppler', bandreverb: 'Band Reverb', stutter: 'Stutter',
   autopan: 'Auto Pan',
@@ -86,6 +192,7 @@ const EFFECT_ACTIVE_KEYS = {
   saturation: ['satActive', 'setSatActive'],
   wow: ['wowActive', 'setWowActive'],
   filter: ['filterActive', 'setFilterActive'],
+  geq: ['geqActive', 'setGeqActive'],
   ringmod: ['ringActive', 'setRingActive'],
   tremolo: ['tremActive', 'setTremActive'],
   flanger: ['flangerActive', 'setFlangerActive'],
@@ -122,7 +229,7 @@ const EFFECT_MIX_SETTER = {
 // Maps each chain-order effect to the sub-tab that contains its controls.
 const EFFECT_SUBTAB = {
   saturation: 'tape', wow: 'tape',
-  filter: 'filter',
+  filter: 'filter', geq: 'filter',
   ringmod: 'mod', flanger: 'mod', tremolo: 'mod', autopan: 'mod',
   delay: 'space', reverb: 'space',
   granulator: 'grain',
@@ -650,6 +757,16 @@ export function VoiceControls({ voice }) {
             <ModRow voice={v} pKey="filterHz" label="Cutoff" min={40} max={18000} step={10} value={v.filterHz} onChange={v.setFilterHz} format={fmtHz} />
             <ModRow voice={v} pKey="filterQ" label="Resonance" min={0.1} max={20} step={0.1} value={v.filterQ} onChange={v.setFilterQ} format={fmtNum1} />
             <EffectGainRow voice={v} name="filter" />
+          </div>
+          <div className="panel">
+            <PanelTitle active={v.geqActive} onToggle={() => v.setGeqActive(!v.geqActive)}>10-band graphic EQ</PanelTitle>
+            <GeqCanvas
+              active={v.geqActive}
+              gains={v.geqGains}
+              onGainChange={v.setGeqGain}
+              onReset={() => v.setGeqGains([0, 0, 0, 0, 0, 0, 0, 0, 0, 0])}
+            />
+            <EffectGainRow voice={v} name="geq" />
           </div>
         </>}
 

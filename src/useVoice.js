@@ -73,6 +73,13 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
   const [sampleDelayActive, setSampleDelayActive] = useState(initial.sampleDelayActive ?? false)
   const [sampleDelayL, setSampleDelayL] = useState(initial.sampleDelayL ?? 0)
   const [sampleDelayR, setSampleDelayR] = useState(initial.sampleDelayR ?? 0)
+  // 10-band graphic EQ — peaking filters at ISO centers, ±18 dB each.
+  const [geqActive, setGeqActive] = useState(initial.geqActive ?? true)
+  const [geqGains, setGeqGains] = useState(() => initial.geqGains && Array.isArray(initial.geqGains) && initial.geqGains.length === 10
+    ? [...initial.geqGains] : [0, 0, 0, 0, 0, 0, 0, 0, 0, 0])
+  const setGeqGain = useCallback((i, v) => {
+    setGeqGains(prev => prev.map((g, j) => j === i ? v : g))
+  }, [])
   const [satActive, setSatActive] = useState(initial.satActive ?? true)
   const [saturation, setSaturation] = useState(initial.saturation ?? 0)
   const [wowActive, setWowActive] = useState(initial.wowActive ?? true)
@@ -202,7 +209,7 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
   // effect chain order
   const [effectOrder, setEffectOrder] = useState(() => {
     const defaults = [
-      'saturation', 'wow', 'filter', 'ringmod', 'tremolo', 'flanger', 'delay',
+      'saturation', 'wow', 'filter', 'geq', 'ringmod', 'tremolo', 'flanger', 'delay',
       'reverb', 'granulator', 'freeze', 'doppler', 'banddoppler', 'autopan',
     ]
     const existing = initial.effectOrder
@@ -225,6 +232,10 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
     if (!arr.includes('stutter')) {
       const idx = arr.indexOf('bandreverb')
       arr.splice(idx >= 0 ? idx + 1 : arr.length, 0, 'stutter')
+    }
+    if (!arr.includes('geq')) {
+      const idx = arr.indexOf('filter')
+      arr.splice(idx >= 0 ? idx + 1 : arr.length, 0, 'geq')
     }
     // strip clatter if present from older sessions (feature removed)
     arr = arr.filter(x => x !== 'clatter')
@@ -686,6 +697,24 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
       filter.type = filterActive ? filterType : 'allpass'; filter.frequency.value = filterHz; filter.Q.value = filterQ
       input.connect(filter).connect(output)
       modules.filter = { input, output, filter } }
+
+    // 10-band graphic EQ — peaking filters at ISO centers (31.5 Hz → 16 kHz).
+    // When inactive, all gains are 0 dB → transparent. Live updates write
+    // gain.value from a useEffect on geqActive / geqGains.
+    { const input = G(), output = G()
+      const freqs = [31.5, 63, 125, 250, 500, 1000, 2000, 4000, 8000, 16000]
+      const filters = freqs.map(f => {
+        const bf = ctx.createBiquadFilter()
+        bf.type = 'peaking'; bf.frequency.value = f; bf.Q.value = 1.4
+        return bf
+      })
+      let prev = input
+      for (const bf of filters) { prev.connect(bf); prev = bf }
+      prev.connect(output)
+      // initial gain values mirror current state
+      const initActive = geqActive
+      filters.forEach((bf, i) => { bf.gain.value = initActive ? (geqGains[i] ?? 0) : 0 })
+      modules.geq = { input, output, filters, freqs } }
 
     // Ring Modulator — dry + wet paths stay wired; the carrier osc is lazy.
     { const input = G(), output = G()
@@ -1334,6 +1363,17 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
     n.sdDlyR.delayTime.setTargetAtTime(rSec, t, 0.005)
   }, [sampleDelayActive, sampleDelayL, sampleDelayR, getAudioCtx])
 
+  // live-update geq band gains
+  useEffect(() => {
+    const g = nodesRef.current?.modules?.geq
+    if (!g) return
+    const t = getAudioCtx().currentTime
+    g.filters.forEach((bf, i) => {
+      const target = geqActive ? Math.max(-18, Math.min(18, geqGains[i] ?? 0)) : 0
+      bf.gain.setTargetAtTime(target, t, 0.01)
+    })
+  }, [geqActive, geqGains, getAudioCtx])
+
   // Keep loop bounds in a ref so the play-tick closure picks up live edits
   // (e.g. dragging loop handles during playback) without having to restart.
   const loopBoundsRef = useRef({ start: loopStart, end: loopEnd })
@@ -1500,6 +1540,7 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
       printDurationSec, printedSwap,
       modulators,
       sampleDelayActive, sampleDelayL, sampleDelayR,
+      geqActive, geqGains,
     })
   }, [onSnapshot,
     loadedPoolId, tempo, pitch, voiceGain, reversed, loopStart, loopEnd, view,
@@ -1527,6 +1568,7 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
     printDurationSec, printedSwap,
     modulators,
     sampleDelayActive, sampleDelayL, sampleDelayR,
+    geqActive, geqGains,
   ])
 
   // Live updates
@@ -2261,5 +2303,7 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
     sampleDelayActive, setSampleDelayActive,
     sampleDelayL, setSampleDelayL,
     sampleDelayR, setSampleDelayR,
+    geqActive, setGeqActive,
+    geqGains, setGeqGains, setGeqGain,
   }
 }

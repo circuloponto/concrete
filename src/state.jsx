@@ -38,6 +38,9 @@ export const defaultVoice = () => ({
   filterType: 'lowpass',
   filterHz: 18000,
   filterQ: 0.7,
+  // 10-band graphic EQ
+  geqActive: true,
+  geqGains: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
   // saturation
   satActive: false,
   saturation: 0,
