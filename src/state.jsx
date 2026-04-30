@@ -41,6 +41,16 @@ export const defaultVoice = () => ({
   // 10-band graphic EQ
   geqActive: true,
   geqGains: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+  // UVI-Phase-style phase rotator
+  phaseActive: false,
+  phaseAngle: 0,
+  phaseDetail: false,
+  phaseLowAngle: 0,
+  phaseMidAngle: 0,
+  phaseHighAngle: 0,
+  phaseFollowerActive: false,
+  phaseFollowerAmount: 0.5,
+  phaseMix: 1,
   // saturation
   satActive: false,
   saturation: 0,

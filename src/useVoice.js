@@ -3,6 +3,7 @@ import { useStore, defaultVoice } from './state'
 import { reverseBuffer, makeReverbIR, makeSaturationCurve } from './audio'
 import { applyModulation, DEFAULT_MOD, MOD_SPEC, lfoWave } from './modulation'
 import { createStretchShim } from './audio/stretchShim'
+import { buildPhaseRotator } from './audio/phaseRotator'
 import { isWorkletReady, ensureWorklets } from './audio/workletHost'
 import { attachLfo, LFO_TARGETS } from './audio/lfoRouter'
 import { getIRSync } from './audio/irCache'
@@ -80,6 +81,16 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
   const setGeqGain = useCallback((i, v) => {
     setGeqGains(prev => prev.map((g, j) => j === i ? v : g))
   }, [])
+  // UVI-Phase-style phase rotator
+  const [phaseActive, setPhaseActive] = useState(initial.phaseActive ?? false)
+  const [phaseAngle, setPhaseAngle] = useState(initial.phaseAngle ?? 0)
+  const [phaseDetail, setPhaseDetail] = useState(initial.phaseDetail ?? false)
+  const [phaseLowAngle, setPhaseLowAngle] = useState(initial.phaseLowAngle ?? 0)
+  const [phaseMidAngle, setPhaseMidAngle] = useState(initial.phaseMidAngle ?? 0)
+  const [phaseHighAngle, setPhaseHighAngle] = useState(initial.phaseHighAngle ?? 0)
+  const [phaseFollowerActive, setPhaseFollowerActive] = useState(initial.phaseFollowerActive ?? false)
+  const [phaseFollowerAmount, setPhaseFollowerAmount] = useState(initial.phaseFollowerAmount ?? 0.5)
+  const [phaseMix, setPhaseMix] = useState(initial.phaseMix ?? 1)
   const [satActive, setSatActive] = useState(initial.satActive ?? true)
   const [saturation, setSaturation] = useState(initial.saturation ?? 0)
   const [wowActive, setWowActive] = useState(initial.wowActive ?? true)
@@ -209,7 +220,7 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
   // effect chain order
   const [effectOrder, setEffectOrder] = useState(() => {
     const defaults = [
-      'saturation', 'wow', 'filter', 'geq', 'ringmod', 'tremolo', 'flanger', 'delay',
+      'saturation', 'wow', 'filter', 'geq', 'phase', 'ringmod', 'tremolo', 'flanger', 'delay',
       'reverb', 'granulator', 'freeze', 'doppler', 'banddoppler', 'autopan',
     ]
     const existing = initial.effectOrder
@@ -236,6 +247,10 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
     if (!arr.includes('geq')) {
       const idx = arr.indexOf('filter')
       arr.splice(idx >= 0 ? idx + 1 : arr.length, 0, 'geq')
+    }
+    if (!arr.includes('phase')) {
+      const idx = arr.indexOf('geq')
+      arr.splice(idx >= 0 ? idx + 1 : arr.length, 0, 'phase')
     }
     // strip clatter if present from older sessions (feature removed)
     arr = arr.filter(x => x !== 'clatter')
@@ -715,6 +730,28 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
       const initActive = geqActive
       filters.forEach((bf, i) => { bf.gain.value = initActive ? (geqGains[i] ?? 0) : 0 })
       modules.geq = { input, output, filters, freqs } }
+
+    // Phase rotator (UVI-Phase-style). Hilbert pair + cos/sin gain mix
+    // gives continuous phase rotation without changing the magnitude
+    // spectrum. Optional 3-band detail and an envelope follower live
+    // inside the rotator module; live updates push the latest state in
+    // via a useEffect below.
+    { const input = G(), output = G()
+      const rotator = buildPhaseRotator(ctx)
+      input.connect(rotator.input); rotator.output.connect(output)
+      // seed initial state
+      const initActive = phaseActive
+      rotator.setAngle(initActive ? phaseAngle : 0)
+      rotator.setBandAngles(
+        initActive ? phaseLowAngle : 0,
+        initActive ? phaseMidAngle : 0,
+        initActive ? phaseHighAngle : 0,
+      )
+      rotator.setDetail(initActive && phaseDetail)
+      rotator.setMix(initActive ? phaseMix : 0)
+      rotator.setFollowerActive(initActive && phaseFollowerActive)
+      rotator.setFollowerAmount(phaseFollowerAmount)
+      modules.phase = { input, output, rotator } }
 
     // Ring Modulator — dry + wet paths stay wired; the carrier osc is lazy.
     { const input = G(), output = G()
@@ -1374,6 +1411,23 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
     })
   }, [geqActive, geqGains, getAudioCtx])
 
+  // live-update phase rotator state
+  useEffect(() => {
+    const p = nodesRef.current?.modules?.phase
+    if (!p) return
+    p.rotator.setAngle(phaseActive ? phaseAngle : 0)
+    p.rotator.setBandAngles(
+      phaseActive ? phaseLowAngle : 0,
+      phaseActive ? phaseMidAngle : 0,
+      phaseActive ? phaseHighAngle : 0,
+    )
+    p.rotator.setDetail(phaseActive && phaseDetail)
+    p.rotator.setMix(phaseActive ? phaseMix : 0)
+    p.rotator.setFollowerActive(phaseActive && phaseFollowerActive)
+    p.rotator.setFollowerAmount(phaseFollowerAmount)
+  }, [phaseActive, phaseAngle, phaseDetail, phaseLowAngle, phaseMidAngle, phaseHighAngle,
+      phaseMix, phaseFollowerActive, phaseFollowerAmount])
+
   // Keep loop bounds in a ref so the play-tick closure picks up live edits
   // (e.g. dragging loop handles during playback) without having to restart.
   const loopBoundsRef = useRef({ start: loopStart, end: loopEnd })
@@ -1541,6 +1595,8 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
       modulators,
       sampleDelayActive, sampleDelayL, sampleDelayR,
       geqActive, geqGains,
+      phaseActive, phaseAngle, phaseDetail, phaseLowAngle, phaseMidAngle, phaseHighAngle,
+      phaseFollowerActive, phaseFollowerAmount, phaseMix,
     })
   }, [onSnapshot,
     loadedPoolId, tempo, pitch, voiceGain, reversed, loopStart, loopEnd, view,
@@ -1569,6 +1625,8 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
     modulators,
     sampleDelayActive, sampleDelayL, sampleDelayR,
     geqActive, geqGains,
+    phaseActive, phaseAngle, phaseDetail, phaseLowAngle, phaseMidAngle, phaseHighAngle,
+    phaseFollowerActive, phaseFollowerAmount, phaseMix,
   ])
 
   // Live updates
@@ -2305,5 +2363,14 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
     sampleDelayR, setSampleDelayR,
     geqActive, setGeqActive,
     geqGains, setGeqGains, setGeqGain,
+    phaseActive, setPhaseActive,
+    phaseAngle, setPhaseAngle,
+    phaseDetail, setPhaseDetail,
+    phaseLowAngle, setPhaseLowAngle,
+    phaseMidAngle, setPhaseMidAngle,
+    phaseHighAngle, setPhaseHighAngle,
+    phaseFollowerActive, setPhaseFollowerActive,
+    phaseFollowerAmount, setPhaseFollowerAmount,
+    phaseMix, setPhaseMix,
   }
 }

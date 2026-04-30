@@ -181,7 +181,7 @@ function GeqCanvas({ active, gains, onGainChange, onReset }) {
 }
 
 const EFFECT_LABELS = {
-  saturation: 'Saturation', wow: 'Wow/Flutter', filter: 'Filter', geq: 'Graphic EQ',
+  saturation: 'Saturation', wow: 'Wow/Flutter', filter: 'Filter', geq: 'Graphic EQ', phase: 'Phase',
   ringmod: 'Ring Mod', tremolo: 'Tremolo',
   flanger: 'Flanger', delay: 'Tape Delay', reverb: 'Reverb', granulator: 'Granulator', freeze: 'Freeze',
   doppler: 'Doppler', banddoppler: 'Band Doppler', bandreverb: 'Band Reverb', stutter: 'Stutter',
@@ -193,6 +193,7 @@ const EFFECT_ACTIVE_KEYS = {
   wow: ['wowActive', 'setWowActive'],
   filter: ['filterActive', 'setFilterActive'],
   geq: ['geqActive', 'setGeqActive'],
+  phase: ['phaseActive', 'setPhaseActive'],
   ringmod: ['ringActive', 'setRingActive'],
   tremolo: ['tremActive', 'setTremActive'],
   flanger: ['flangerActive', 'setFlangerActive'],
@@ -224,13 +225,14 @@ const EFFECT_MIX_SETTER = {
   banddoppler: 'setBandDopplerMix',
   bandreverb: 'setBandReverbMix',
   stutter: 'setStutterMix',
+  phase: 'setPhaseMix',
 }
 
 // Maps each chain-order effect to the sub-tab that contains its controls.
 const EFFECT_SUBTAB = {
   saturation: 'tape', wow: 'tape',
   filter: 'filter', geq: 'filter',
-  ringmod: 'mod', flanger: 'mod', tremolo: 'mod', autopan: 'mod',
+  ringmod: 'mod', flanger: 'mod', tremolo: 'mod', autopan: 'mod', phase: 'mod',
   delay: 'space', reverb: 'space',
   granulator: 'grain',
   freeze: 'freeze',
@@ -771,6 +773,38 @@ export function VoiceControls({ voice }) {
         </>}
 
         {sub === 'mod' && <>
+          <div className="panel">
+            <PanelTitle active={v.phaseActive} onToggle={() => v.setPhaseActive(!v.phaseActive)}>Phase rotator</PanelTitle>
+            <ModRow voice={v} pKey="phaseAngle" label="Angle" min={0} max={180} step={1} value={v.phaseAngle} onChange={v.setPhaseAngle} format={(x) => x.toFixed(0)} unit="°" />
+            <ModRow voice={v} pKey="phaseMix" label="Mix" min={0} max={1} step={0.01} value={v.phaseMix} onChange={v.setPhaseMix} format={fmtPct} />
+            <div className="row">
+              <label>Detail</label>
+              <button
+                className={'tiny-toggle' + (v.phaseDetail ? ' active' : '')}
+                onClick={() => v.setPhaseDetail(!v.phaseDetail)}
+                title="3-band rotation (independent LF/MF/HF angles)"
+              >{v.phaseDetail ? '3-band' : 'global'}</button>
+              <span className="value" />
+            </div>
+            {v.phaseDetail && <>
+              <ModRow voice={v} pKey="phaseLowAngle" label="LF" min={0} max={180} step={1} value={v.phaseLowAngle} onChange={v.setPhaseLowAngle} format={(x) => x.toFixed(0)} unit="°" />
+              <ModRow voice={v} pKey="phaseMidAngle" label="MF" min={0} max={180} step={1} value={v.phaseMidAngle} onChange={v.setPhaseMidAngle} format={(x) => x.toFixed(0)} unit="°" />
+              <ModRow voice={v} pKey="phaseHighAngle" label="HF" min={0} max={180} step={1} value={v.phaseHighAngle} onChange={v.setPhaseHighAngle} format={(x) => x.toFixed(0)} unit="°" />
+            </>}
+            <div className="row">
+              <label>Follower</label>
+              <button
+                className={'tiny-toggle' + (v.phaseFollowerActive ? ' active' : '')}
+                onClick={() => v.setPhaseFollowerActive(!v.phaseFollowerActive)}
+                title="envelope-follower scales rotation by transient peaks"
+              >{v.phaseFollowerActive ? 'on' : 'off'}</button>
+              <span className="value" />
+            </div>
+            {v.phaseFollowerActive && (
+              <ModRow voice={v} pKey="phaseFollowerAmount" label="Amount" min={0} max={1} step={0.01} value={v.phaseFollowerAmount} onChange={v.setPhaseFollowerAmount} format={fmtPct} />
+            )}
+            <EffectGainRow voice={v} name="phase" />
+          </div>
           <div className="panel">
             <PanelTitle active={v.ringActive} onToggle={() => v.setRingActive(!v.ringActive)}>Ring modulator</PanelTitle>
             <ModRow voice={v} pKey="ringFreq" label="Freq" min={1} max={2000} step={1} value={v.ringFreq} onChange={v.setRingFreq} format={fmtHz} />
