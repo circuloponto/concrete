@@ -72,6 +72,10 @@ export const defaultVoice = () => ({
   tremActive: false,
   tremRate: 4,
   tremDepth: 0,
+  tremWave: 'sine',
+  // 64-sample drawn cycle. Default = one period of a sine; UI can replace
+  // it with any user-drawn shape, fed into the tremolo's PeriodicWave.
+  tremCustomWave: Array.from({ length: 64 }, (_, i) => Math.sin((i / 64) * Math.PI * 2)),
   // auto pan
   panActive: false,
   panRate: 0.6,

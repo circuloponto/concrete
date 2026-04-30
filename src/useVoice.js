@@ -115,6 +115,12 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
   const [tremActive, setTremActive] = useState(initial.tremActive ?? true)
   const [tremRate, setTremRate] = useState(initial.tremRate ?? 4)
   const [tremDepth, setTremDepth] = useState(initial.tremDepth ?? 0)
+  const [tremWave, setTremWave] = useState(initial.tremWave ?? 'sine')
+  const [tremCustomWave, setTremCustomWave] = useState(() => {
+    if (Array.isArray(initial.tremCustomWave) && initial.tremCustomWave.length === 64) return [...initial.tremCustomWave]
+    // default: a sine cycle, 64 samples
+    return Array.from({ length: 64 }, (_, i) => Math.sin((i / 64) * Math.PI * 2))
+  })
   const [panActive, setPanActive] = useState(initial.panActive ?? true)
   const [panRate, setPanRate] = useState(initial.panRate ?? 0.6)
   const [panDepth, setPanDepth] = useState(initial.panDepth ?? 0)
@@ -294,7 +300,7 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
     filterHz, filterQ,
     ringFreq, ringAmount,
     flangerRate, flangerDepth, flangerFb, flangerMix,
-    tremRate, tremDepth,
+    tremRate, tremDepth, tremWave, tremCustomWave,
     wowRate, wowDepth,
     delayTime, delayFb, wet, reverbWet,
     granPos, granDensity, granPitch,
@@ -777,16 +783,43 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
       modules.ringmod = mod
     }
 
-    // Tremolo — lazy LFO.
+    // Tremolo — lazy LFO with selectable wave shape (or user-drawn cycle).
     { const input = G(), output = G()
       const tremoloGain = G(1 - tremDepth / 2)
       const tremoloDepthGain = G(tremDepth / 2)
       input.connect(tremoloGain).connect(output)
       const mod = { input, output, tremoloGain, tremoloDepthGain, tremoloLfo: null }
-      mod.buildLfo = (rate) => {
+      // Build a PeriodicWave from a 64-sample drawn cycle by computing a
+      // naive DFT to get cos/sin coefficients up to half the sample count.
+      const customToPeriodicWave = (samples) => {
+        const N = samples.length
+        const H = Math.floor(N / 2)
+        const real = new Float32Array(H + 1)
+        const imag = new Float32Array(H + 1)
+        for (let k = 1; k <= H; k++) {
+          let re = 0, im = 0
+          for (let n = 0; n < N; n++) {
+            const t = (2 * Math.PI * k * n) / N
+            re += samples[n] * Math.cos(t)
+            im -= samples[n] * Math.sin(t)
+          }
+          real[k] = re / N * 2
+          imag[k] = im / N * 2
+        }
+        return ctx.createPeriodicWave(real, imag, { disableNormalization: false })
+      }
+      mod.applyWave = (osc, wave, customSamples) => {
+        if (wave === 'custom') {
+          osc.setPeriodicWave(customToPeriodicWave(customSamples))
+        } else {
+          osc.type = (wave === 'triangle' || wave === 'square' || wave === 'sawtooth') ? wave : 'sine'
+        }
+      }
+      mod.buildLfo = (rate, wave, customSamples) => {
         if (mod.tremoloLfo) return
-        const osc = ctx.createOscillator(); osc.type = 'sine'
+        const osc = ctx.createOscillator()
         osc.frequency.value = Math.max(0.01, rate)
+        mod.applyWave(osc, wave, customSamples)
         osc.connect(mod.tremoloDepthGain).connect(mod.tremoloGain.gain); osc.start()
         mod.tremoloLfo = osc
       }
@@ -796,7 +829,7 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
         try { mod.tremoloLfo.disconnect() } catch {}
         mod.tremoloLfo = null
       }
-      if (tremActive) mod.buildLfo(tremRate)
+      if (tremActive) mod.buildLfo(tremRate, tremWave, tremCustomWave)
       modules.tremolo = mod
     }
 
@@ -1575,7 +1608,7 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
       filterActive, filterType, filterHz, filterQ,
       ringActive, ringFreq, ringAmount,
       flangerActive, flangerRate, flangerDepth, flangerFb, flangerMix,
-      tremActive, tremRate, tremDepth,
+      tremActive, tremRate, tremDepth, tremWave, tremCustomWave,
       panActive, panRate, panDepth, panCenter, panWave,
       delayActive, delayTime, delayFb, wet,
       reverbActive, reverbSize, reverbWet, reverbIRPoolId,
@@ -1605,7 +1638,7 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
     filterActive, filterType, filterHz, filterQ,
     ringActive, ringFreq, ringAmount,
     flangerActive, flangerRate, flangerDepth, flangerFb, flangerMix,
-    tremActive, tremRate, tremDepth,
+    tremActive, tremRate, tremDepth, tremWave, tremCustomWave,
     panActive, panRate, panDepth, panCenter, panWave,
     delayActive, delayTime, delayFb, wet,
     reverbActive, reverbSize, reverbWet, reverbIRPoolId,
@@ -1718,13 +1751,19 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
   useEffect(() => {
     const m = nodesRef.current?.modules?.tremolo
     if (!m) return
-    if (tremActive) m.buildLfo(tremRate)
+    if (tremActive) m.buildLfo(tremRate, tremWave, tremCustomWave)
     else m.teardownLfo()
   }, [tremActive])
   useEffect(() => {
     const lfo = nodesRef.current?.modules?.tremolo?.tremoloLfo
     if (lfo) lfo.frequency.value = Math.max(0.01, tremRate)
   }, [tremRate])
+  // Re-apply wave shape when the user changes wave or redraws the custom cycle.
+  useEffect(() => {
+    const m = nodesRef.current?.modules?.tremolo
+    if (!m || !m.tremoloLfo) return
+    m.applyWave(m.tremoloLfo, tremWave, tremCustomWave)
+  }, [tremWave, tremCustomWave])
   // tremolo: when off, gain stays at 1 with no modulation
   useEffect(() => {
     if (!nodesRef.current) return
@@ -2264,6 +2303,8 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
     tremActive, setTremActive,
     tremRate, setTremRate,
     tremDepth, setTremDepth,
+    tremWave, setTremWave,
+    tremCustomWave, setTremCustomWave,
     panActive, setPanActive,
     panRate, setPanRate,
     panDepth, setPanDepth,

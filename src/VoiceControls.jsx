@@ -180,6 +180,91 @@ function GeqCanvas({ active, gains, onGainChange, onReset }) {
   )
 }
 
+// 64-sample drawable LFO waveform editor. The samples array is in [-1, 1].
+function WaveCanvas({ samples, onChange, onReset }) {
+  const canvasRef = useRef(null)
+  const draggingRef = useRef(false)
+  const lastIdxRef = useRef(-1)
+  const W = 320, H = 80
+  const N = samples?.length || 64
+  const xForIdx = (i) => (i / (N - 1)) * (W - 2) + 1
+  const idxForX = (x) => Math.max(0, Math.min(N - 1, Math.round(((x - 1) / (W - 2)) * (N - 1))))
+  const yForVal = (v) => H / 2 - v * (H / 2 - 4)
+  const valForY = (y) => Math.max(-1, Math.min(1, (H / 2 - y) / (H / 2 - 4)))
+  const draw = useCallback(() => {
+    const c = canvasRef.current; if (!c) return
+    const ctx = c.getContext('2d')
+    const hl = getComputedStyle(c).getPropertyValue('--hl').trim() || '#00ff9c'
+    ctx.clearRect(0, 0, W, H)
+    ctx.fillStyle = 'rgba(0,0,0,0.18)'; ctx.fillRect(0, 0, W, H)
+    // 0 line
+    ctx.strokeStyle = 'rgba(255,255,255,0.18)'; ctx.lineWidth = 1
+    ctx.beginPath(); ctx.moveTo(0, H / 2); ctx.lineTo(W, H / 2); ctx.stroke()
+    // wave
+    ctx.strokeStyle = hl; ctx.lineWidth = 1.5
+    ctx.beginPath()
+    for (let i = 0; i < N; i++) {
+      const x = xForIdx(i), y = yForVal(samples[i] ?? 0)
+      if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y)
+    }
+    ctx.stroke()
+  }, [samples])
+  useEffect(() => { draw() }, [draw])
+  const writeRange = (fromIdx, toIdx, fromVal, toVal) => {
+    const lo = Math.min(fromIdx, toIdx), hi = Math.max(fromIdx, toIdx)
+    const next = samples.slice()
+    for (let i = lo; i <= hi; i++) {
+      const t = lo === hi ? 1 : (i - fromIdx) / (toIdx - fromIdx || 1)
+      next[i] = Math.max(-1, Math.min(1, fromVal + (toVal - fromVal) * t))
+    }
+    onChange(next)
+  }
+  const onPointerDown = (e) => {
+    e.currentTarget.setPointerCapture(e.pointerId)
+    draggingRef.current = true
+    const r = canvasRef.current.getBoundingClientRect()
+    const px = (e.clientX - r.left) * W / r.width
+    const py = (e.clientY - r.top) * H / r.height
+    const i = idxForX(px), v = valForY(py)
+    const next = samples.slice(); next[i] = v; onChange(next)
+    lastIdxRef.current = i
+  }
+  const onPointerMove = (e) => {
+    if (!draggingRef.current) return
+    const r = canvasRef.current.getBoundingClientRect()
+    const px = (e.clientX - r.left) * W / r.width
+    const py = (e.clientY - r.top) * H / r.height
+    const i = idxForX(px), v = valForY(py)
+    if (lastIdxRef.current >= 0 && lastIdxRef.current !== i) {
+      // interpolate across skipped samples for smooth strokes
+      writeRange(lastIdxRef.current, i, samples[lastIdxRef.current], v)
+    } else {
+      const next = samples.slice(); next[i] = v; onChange(next)
+    }
+    lastIdxRef.current = i
+  }
+  const onPointerUp = () => { draggingRef.current = false; lastIdxRef.current = -1 }
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+      <canvas
+        ref={canvasRef}
+        width={W}
+        height={H}
+        style={{ width: '100%', height: H, cursor: 'crosshair', borderRadius: 2 }}
+        onPointerDown={onPointerDown}
+        onPointerMove={onPointerMove}
+        onPointerUp={onPointerUp}
+        onPointerCancel={onPointerUp}
+        title="drag to draw the LFO cycle"
+      />
+      <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 9, color: 'var(--dim)' }}>
+        <span>drag to sculpt one cycle · ±1</span>
+        <button className="tiny-toggle" onClick={onReset} title="reset to sine">sine</button>
+      </div>
+    </div>
+  )
+}
+
 const EFFECT_LABELS = {
   saturation: 'Saturation', wow: 'Wow/Flutter', filter: 'Filter', geq: 'Graphic EQ', phase: 'Phase',
   ringmod: 'Ring Mod', tremolo: 'Tremolo',
@@ -821,8 +906,26 @@ export function VoiceControls({ voice }) {
           </div>
           <div className="panel">
             <PanelTitle active={v.tremActive} onToggle={() => v.setTremActive(!v.tremActive)}>Tremolo</PanelTitle>
+            <div className="row">
+              <label>Wave</label>
+              <select className="select-inline" value={v.tremWave} onChange={e => v.setTremWave(e.target.value)}>
+                <option value="sine">Sine</option>
+                <option value="triangle">Triangle</option>
+                <option value="square">Square</option>
+                <option value="sawtooth">Saw</option>
+                <option value="custom">Custom (drawn)</option>
+              </select>
+              <span className="value" />
+            </div>
             <ModRow voice={v} pKey="tremRate" label="Rate" min={0.1} max={20} step={0.1} value={v.tremRate} onChange={v.setTremRate} format={fmtNum1} unit="Hz" />
             <ModRow voice={v} pKey="tremDepth" label="Depth" min={0} max={1} step={0.01} value={v.tremDepth} onChange={v.setTremDepth} format={fmtPct} />
+            {v.tremWave === 'custom' && (
+              <WaveCanvas
+                samples={v.tremCustomWave}
+                onChange={v.setTremCustomWave}
+                onReset={() => v.setTremCustomWave(Array.from({ length: 64 }, (_, i) => Math.sin((i / 64) * Math.PI * 2)))}
+              />
+            )}
             <EffectGainRow voice={v} name="tremolo" />
           </div>
           <div className="panel">
