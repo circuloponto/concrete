@@ -627,7 +627,7 @@ export function VoiceControls({ voice }) {
   const fmtHz = (hz) => hz >= 1000 ? `${(hz / 1000).toFixed(2)}k` : `${Math.round(hz)}`
   const fmtNum2 = (x) => x.toFixed(2)
   const fmtNum1 = (x) => x.toFixed(1)
-  const fmtPitch = (x) => `${x > 0 ? '+' : ''}${x}`
+  const fmtPitch = (x) => `${x >= 0 ? '+' : ''}${x.toFixed(2)}`
   const fmtMs = (x) => `${Math.round(x * 1000)}`
 
   return (
@@ -671,7 +671,7 @@ export function VoiceControls({ voice }) {
           <div className="panel">
             <h4>Transport</h4>
             <ModRow voice={v} pKey="tempo" label="Speed" min={0.25} max={4} step={0.01} value={v.tempo} onChange={v.setTempo} format={fmtNum2} unit="×" />
-            <ModRow voice={v} pKey="pitch" label="Pitch" min={-24} max={24} step={1} value={v.pitch} onChange={v.setPitch} format={fmtPitch} unit="st" />
+            <ModRow voice={v} pKey="pitch" label="Pitch" min={-24} max={24} step={0.01} value={v.pitch} onChange={v.setPitch} format={fmtPitch} unit="st" />
             <ModRow voice={v} pKey="voiceGain" label="Gain" min={0} max={1.5} step={0.01} value={v.voiceGain} onChange={v.setVoiceGain} format={fmtPct} />
           </div>
           <div className="panel">
@@ -917,7 +917,7 @@ export function VoiceControls({ voice }) {
           </div>
           <div className="panel">
             <h4>Grain Pitch</h4>
-            <ModRow voice={v} pKey="granPitch" label="Pitch" min={-24} max={24} step={1} value={v.granPitch} onChange={v.setGranPitch} format={fmtPitch} unit="st" />
+            <ModRow voice={v} pKey="granPitch" label="Pitch" min={-24} max={24} step={0.01} value={v.granPitch} onChange={v.setGranPitch} format={fmtPitch} unit="st" />
             <Row label="Spread" value={v.granPitchSpread.toFixed(1)} unit="st"><Slider min={0} max={12} step={0.1} value={v.granPitchSpread} onChange={v.setGranPitchSpread} /></Row>
             <Row label="Gain" value={fmtPct(v.granGain)}><Slider min={0} max={1.5} step={0.01} value={v.granGain} onChange={v.setGranGain} /></Row>
           </div>
@@ -975,8 +975,8 @@ export function VoiceControls({ voice }) {
             <Row label="Gain" value={fmtPct(v.freezeGainVal)}>
               <Slider min={0} max={3} step={0.01} value={v.freezeGainVal} onChange={v.setFreezeGainVal} />
             </Row>
-            <Row label="Pitch" value={(v.freezePitch > 0 ? '+' : '') + v.freezePitch} unit="st">
-              <Slider min={-24} max={24} step={1} value={v.freezePitch} onChange={v.setFreezePitch} />
+            <Row label="Pitch" value={fmtPitch(v.freezePitch)} unit="st">
+              <Slider min={-24} max={24} step={0.01} value={v.freezePitch} onChange={v.setFreezePitch} />
             </Row>
             <Row label="Voices" value={v.freezeVoices}>
               <Slider min={1} max={16} step={1} value={v.freezeVoices} onChange={v.setFreezeVoices} />
@@ -1048,11 +1048,11 @@ export function VoiceControls({ voice }) {
               >{v.stutterPitchActive ? 'ON' : 'OFF'}</button>
             </Row>
             {v.stutterPitchActive && <>
-              <Row label="Start pitch" value={(v.stutterStartPitch > 0 ? '+' : '') + v.stutterStartPitch} unit="st">
-                <Slider min={-24} max={24} step={1} value={v.stutterStartPitch} onChange={v.setStutterStartPitch} />
+              <Row label="Start pitch" value={fmtPitch(v.stutterStartPitch)} unit="st">
+                <Slider min={-24} max={24} step={0.01} value={v.stutterStartPitch} onChange={v.setStutterStartPitch} />
               </Row>
-              <Row label="End pitch" value={(v.stutterEndPitch > 0 ? '+' : '') + v.stutterEndPitch} unit="st">
-                <Slider min={-24} max={24} step={1} value={v.stutterEndPitch} onChange={v.setStutterEndPitch} />
+              <Row label="End pitch" value={fmtPitch(v.stutterEndPitch)} unit="st">
+                <Slider min={-24} max={24} step={0.01} value={v.stutterEndPitch} onChange={v.setStutterEndPitch} />
               </Row>
             </>}
             <Row
