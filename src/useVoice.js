@@ -331,12 +331,14 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
     ringFreq, ringAmount,
     flangerRate, flangerDepth, flangerFb, flangerMix,
     tremRate, tremDepth, tremWave, tremCustomWave,
+    panRate, panDepth, panCenter,
     wowRate, wowDepth,
     delayTime, delayFb, wet, reverbWet,
     granPos, granDensity, granPitch,
     dopplerSpeed, dopplerRange, dopplerMinDist, dopplerMix,
     freezePos, freezeMix,
     modulators,
+    autoActive, autoMods,
   }
 
   // Granulator params mirror — the scheduler reads from here so slider changes
