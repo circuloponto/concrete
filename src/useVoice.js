@@ -1,7 +1,7 @@
 import { useRef, useState, useEffect, useCallback } from 'react'
 import { useStore, defaultVoice } from './state'
 import { reverseBuffer, makeReverbIR, makeSaturationCurve } from './audio'
-import { applyModulation, DEFAULT_MOD, MOD_SPEC, lfoWave } from './modulation'
+import { applyModulation, DEFAULT_MOD, MOD_SPEC, lfoWave, applyAutoModulation, rollAutoRandom, DEFAULT_AUTO_MOD } from './modulation'
 import { createStretchShim } from './audio/stretchShim'
 import { buildPhaseRotator } from './audio/phaseRotator'
 import { isWorkletReady, ensureWorklets } from './audio/workletHost'
@@ -278,6 +278,36 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
     })
   }, [])
 
+  // ---- Auto-modulation ("generative" parallel layer to manual modulators).
+  // autoMods: same shape as modulators; per-mod random phase/rate/start-delay
+  // is held in autoRandomRef and re-rolled on demand.
+  const [autoActive, setAutoActive] = useState(initial.autoActive ?? false)
+  const [autoMods, setAutoMods] = useState(initial.autoMods ?? {})
+  const [autoPhaseScramble, setAutoPhaseScramble] = useState(initial.autoPhaseScramble ?? 1)
+  const [autoRateJitter, setAutoRateJitter] = useState(initial.autoRateJitter ?? 0.3)
+  const [autoStartDelay, setAutoStartDelay] = useState(initial.autoStartDelay ?? 4)
+  const autoRandomRef = useRef(new Map())
+  const setAutoMod = useCallback((key, patch) => {
+    setAutoMods(prev => {
+      if (patch === null) {
+        const { [key]: _, ...rest } = prev
+        return rest
+      }
+      const existing = prev[key] || { ...DEFAULT_AUTO_MOD }
+      return { ...prev, [key]: { ...existing, ...patch } }
+    })
+  }, [])
+  const scrambleAuto = useCallback(() => {
+    rollAutoRandom(autoRandomRef, autoMods, autoPhaseScramble, autoRateJitter, autoStartDelay)
+  }, [autoMods, autoPhaseScramble, autoRateJitter, autoStartDelay])
+  // Re-roll automatically when the master flips on, and whenever any of
+  // the global knobs / mod set changes (so newly-enabled mods get random
+  // offsets without needing a manual scramble).
+  useEffect(() => {
+    if (!autoActive) return
+    rollAutoRandom(autoRandomRef, autoMods, autoPhaseScramble, autoRateJitter, autoStartDelay)
+  }, [autoActive, autoMods, autoPhaseScramble, autoRateJitter, autoStartDelay])
+
   // per-effect output gain. Missing keys mean unity (1.0). Range 0..8.
   const [effectGains, setEffectGains] = useState(initial.effectGains ?? {})
   const setEffectGain = useCallback((name, value) => {
@@ -365,7 +395,14 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
     for (const k in mods) if (mods[k]?.enabled) return true
     return false
   })()
+  const anyAutoModEnabled = (() => {
+    if (!autoActive) return false
+    const am = autoMods || {}
+    for (const k in am) if (am[k]?.enabled) return true
+    return false
+  })()
   const tickNeeded = anyModEnabled
+    || anyAutoModEnabled
     || granActive
     || dopplerActive
     || bandDopplerActive
@@ -384,6 +421,14 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
       for (const k in mods) { if (mods[k]?.enabled) { anyEnabled = true; break } }
       if (anyEnabled) {
         applyModulation(stateRef.current, nodesRef.current, shifterRef.current, lfoRouterRef.current.skipKeys)
+      }
+      // Auto-modulation layer (generative). Independent of the manual
+      // modulator on/off check above; applies any enabled autoMods that
+      // aren't already covered by a manual modulator on the same key.
+      if (stateRef.current.autoActive) {
+        applyAutoModulation(stateRef.current, nodesRef.current, shifterRef.current, autoRandomRef, lfoRouterRef.current.skipKeys)
+      }
+      if (anyEnabled) {
         // virtual targets — non-AudioParam params that the scheduler reads from refs
         for (const key of VIRTUAL_MOD_KEYS) {
           const m = mods[key]
@@ -1626,6 +1671,7 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
       effectGains,
       printDurationSec, printedSwap,
       modulators,
+      autoActive, autoMods, autoPhaseScramble, autoRateJitter, autoStartDelay,
       sampleDelayActive, sampleDelayL, sampleDelayR,
       geqActive, geqGains,
       phaseActive, phaseAngle, phaseDetail, phaseLowAngle, phaseMidAngle, phaseHighAngle,
@@ -1656,6 +1702,7 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
     effectGains,
     printDurationSec, printedSwap,
     modulators,
+    autoActive, autoMods, autoPhaseScramble, autoRateJitter, autoStartDelay,
     sampleDelayActive, sampleDelayL, sampleDelayR,
     geqActive, geqGains,
     phaseActive, phaseAngle, phaseDetail, phaseLowAngle, phaseMidAngle, phaseHighAngle,
@@ -2391,6 +2438,12 @@ export function useVoice(voiceNumber, outputNode, initial = {}, onSnapshot = nul
     effectGains, setEffectGain,
     // modulation
     modulators, setModulator,
+    autoActive, setAutoActive,
+    autoMods, setAutoMod, setAutoMods,
+    autoPhaseScramble, setAutoPhaseScramble,
+    autoRateJitter, setAutoRateJitter,
+    autoStartDelay, setAutoStartDelay,
+    scrambleAuto,
     // print / swap
     printDurationSec, setPrintDurationSec,
     printing, printProgress, lastPrintId,

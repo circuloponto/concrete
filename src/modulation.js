@@ -167,3 +167,63 @@ export function applyModulation(state, nodes, shifter, skipKeys) {
 }
 
 export const DEFAULT_MOD = { enabled: true, wave: 'sine', rate: 1, depth: 0.3 }
+
+// Default for an entry in `autoMods` (the generative modal). Same shape as
+// a manual modulator, plus separate from it (manual + auto are independent
+// layers; manual M wins if both target the same parameter).
+export const DEFAULT_AUTO_MOD = { enabled: true, wave: 'sine', rate: 0.4, depth: 0.5 }
+
+// Generative modulation layer. Each enabled entry in `autoMods` runs its
+// own LFO with a random phase + rate jitter + start delay so the parameters
+// drift relative to each other instead of all firing in lock-step.
+//
+// `randomRef.current` is a Map keyed by paramKey, each value holding
+// { phase, rateMul, startSec, t0 }. The caller is responsible for rolling
+// fresh random values via rollAutoRandom() — typically on master toggle on
+// or when the "scramble" button is hit.
+export function applyAutoModulation(state, nodes, shifter, randomRef, skipKeys) {
+  if (!nodes || !state.autoMods || !state.autoActive) return
+  const now = performance.now() / 1000
+  const mods = state.autoMods
+  const rndMap = randomRef?.current
+  for (const key in mods) {
+    if (skipKeys && skipKeys.has(key)) continue
+    // Manual modulator on the same param wins; skip auto for it.
+    const manual = state.modulators?.[key]
+    if (manual?.enabled) continue
+    const m = mods[key]
+    if (!m || !m.enabled) continue
+    const spec = MOD_SPEC[key]
+    if (!spec) continue
+    const base = state[key]
+    if (typeof base !== 'number') continue
+    const r = rndMap?.get(key) || { phase: 0, rateMul: 1, startSec: 0, t0: now }
+    const elapsed = now - r.t0
+    if (elapsed < r.startSec) continue   // still inside this mod's start delay
+    const effRate = (m.rate || 1) * (r.rateMul || 1)
+    const lfo = lfoWave(m.wave || 'sine', effRate, now, r.phase || 0)
+    const range = spec.max - spec.min
+    const value = base + lfo * (m.depth || 0) * (range / 2)
+    const clamped = Math.max(spec.min, Math.min(spec.max, value))
+    try { spec.apply(nodes, shifter, clamped) } catch {}
+  }
+}
+
+// Re-roll the per-mod random offsets. Pass the global controls so each
+// keeps its own phase ∈ [0,1), rateMul ∈ [1-jitter, 1+jitter], and
+// startSec ∈ [0, maxStartDelay].
+export function rollAutoRandom(randomRef, autoMods, phaseScramble, rateJitter, maxStartDelay) {
+  if (!randomRef) return
+  const map = randomRef.current || new Map()
+  const t0 = performance.now() / 1000
+  const ps = Math.max(0, Math.min(1, phaseScramble || 0))
+  const rj = Math.max(0, Math.min(1, rateJitter || 0))
+  const md = Math.max(0, maxStartDelay || 0)
+  for (const key in (autoMods || {})) {
+    const phase = ps * Math.random()
+    const rateMul = 1 + rj * (Math.random() * 2 - 1)
+    const startSec = md * Math.random()
+    map.set(key, { phase, rateMul, startSec, t0 })
+  }
+  randomRef.current = map
+}

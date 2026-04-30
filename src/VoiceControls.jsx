@@ -1,5 +1,5 @@
 import React, { useRef, useState, useEffect, useLayoutEffect, useCallback } from 'react'
-import { DEFAULT_MOD } from './modulation'
+import { DEFAULT_MOD, MOD_SPEC } from './modulation'
 import { useStore } from './state'
 import { themeColor } from './audio'
 import { WavesetPanel } from './WavesetPanel'
@@ -535,6 +535,127 @@ function ChainButton({ voice, onPickEffect }) {
   )
 }
 
+// Generative auto-modulation modal. Lists every parameter from MOD_SPEC,
+// with per-row enabled/depth/rate/wave. Global controls at the top set
+// the master on/off and the three randomization knobs (phase scramble,
+// rate jitter, start-delay max). "Scramble" re-rolls the per-mod random
+// values without touching depth/rate/wave.
+function AutoModal({ voice, onClose }) {
+  const [mounted, setMounted] = useState(false)
+  const [closing, setClosing] = useState(false)
+  const closeTimer = useRef(null)
+  useEffect(() => {
+    const r = requestAnimationFrame(() => setMounted(true))
+    return () => cancelAnimationFrame(r)
+  }, [])
+  const close = () => {
+    if (closing) return
+    setClosing(true)
+    closeTimer.current = setTimeout(onClose, 180)
+  }
+  useEffect(() => () => { if (closeTimer.current) clearTimeout(closeTimer.current) }, [])
+  useEffect(() => {
+    const onKey = (e) => { if (e.key === 'Escape') close() }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [])
+  const cls = 'chain-modal-backdrop' + (mounted && !closing ? ' open' : '')
+  const keys = Object.keys(MOD_SPEC)
+  const enableAll = () => keys.forEach(k => voice.setAutoMod(k, { enabled: true }))
+  const disableAll = () => keys.forEach(k => voice.setAutoMod(k, { enabled: false }))
+  return (
+    <div className={cls} onClick={close}>
+      <div className="chain-modal" onClick={e => e.stopPropagation()} style={{ maxWidth: 560 }}>
+        <div className="chain-modal-header">
+          <h3>auto-modulation</h3>
+          <button
+            className={'chain-modal-shuffle' + (voice.autoActive ? ' active' : '')}
+            onClick={() => voice.setAutoActive(!voice.autoActive)}
+            title="master on/off"
+          >{voice.autoActive ? '◉ ON' : '○ OFF'}</button>
+          <button className="chain-modal-shuffle" onClick={voice.scrambleAuto} title="re-roll random offsets">⤨ scramble</button>
+          <button className="chain-modal-close" onClick={close} title="close (Esc)">×</button>
+        </div>
+        <div className="chain-modal-hint">
+          generative LFOs per parameter · each starts at random phase, drifts on rate jitter, fires after random delay · manual M-toggles override
+        </div>
+        <div style={{ padding: '8px 12px', borderBottom: '1px solid var(--border)', display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 8 }}>
+          <div className="row">
+            <label>Phase ±</label>
+            <Slider min={0} max={1} step={0.01} value={voice.autoPhaseScramble} onChange={voice.setAutoPhaseScramble} />
+            <span className="value">{Math.round(voice.autoPhaseScramble * 100)}%</span>
+          </div>
+          <div className="row">
+            <label>Rate jit</label>
+            <Slider min={0} max={1} step={0.01} value={voice.autoRateJitter} onChange={voice.setAutoRateJitter} />
+            <span className="value">{Math.round(voice.autoRateJitter * 100)}%</span>
+          </div>
+          <div className="row">
+            <label>Start ≤</label>
+            <Slider min={0} max={30} step={0.5} value={voice.autoStartDelay} onChange={voice.setAutoStartDelay} />
+            <span className="value">{voice.autoStartDelay.toFixed(1)}s</span>
+          </div>
+        </div>
+        <div style={{ padding: '6px 12px', display: 'flex', gap: 8 }}>
+          <button className="tiny-toggle" onClick={enableAll}>enable all</button>
+          <button className="tiny-toggle" onClick={disableAll}>disable all</button>
+        </div>
+        <div className="chain-modal-list" style={{ maxHeight: '50vh', overflowY: 'auto' }}>
+          {keys.map(key => {
+            const spec = MOD_SPEC[key]
+            const m = voice.autoMods?.[key] || { enabled: false, wave: 'sine', rate: 0.4, depth: 0.5 }
+            return (
+              <div key={key} className="chain-modal-item" style={{ display: 'grid', gridTemplateColumns: '20px 1fr 70px 80px 80px 70px', alignItems: 'center', gap: 6 }}>
+                <button
+                  className={'tiny-toggle' + (m.enabled ? ' active' : '')}
+                  onClick={() => voice.setAutoMod(key, { enabled: !m.enabled })}
+                >{m.enabled ? '●' : '○'}</button>
+                <span className="chain-modal-name">{spec.label}</span>
+                <select
+                  className="select-inline"
+                  value={m.wave || 'sine'}
+                  onChange={e => voice.setAutoMod(key, { wave: e.target.value })}
+                  disabled={!m.enabled}
+                >
+                  <option value="sine">sine</option>
+                  <option value="triangle">tri</option>
+                  <option value="square">sq</option>
+                  <option value="saw">saw</option>
+                  <option value="ramp">ramp</option>
+                  <option value="random">S&amp;H</option>
+                </select>
+                <span className="row" style={{ gap: 4 }}>
+                  <Slider min={0.01} max={5} step={0.01} value={m.rate || 0.4} onChange={v => voice.setAutoMod(key, { rate: v })} />
+                </span>
+                <span className="row" style={{ gap: 4 }}>
+                  <Slider min={0} max={1} step={0.01} value={m.depth || 0.5} onChange={v => voice.setAutoMod(key, { depth: v })} />
+                </span>
+                <span className="value" style={{ fontSize: 9 }}>
+                  {(m.rate || 0.4).toFixed(2)}Hz · {Math.round((m.depth || 0) * 100)}%
+                </span>
+              </div>
+            )
+          })}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function AutoButton({ voice }) {
+  const [open, setOpen] = useState(false)
+  return (
+    <>
+      <button
+        className={'chain-btn' + (voice.autoActive ? ' active' : '')}
+        onClick={() => setOpen(true)}
+        title="auto-modulation (generative LFOs)"
+      >⌁ Auto</button>
+      {open && <AutoModal voice={voice} onClose={() => setOpen(false)} />}
+    </>
+  )
+}
+
 function PanelTitle({ children, active, onToggle }) {
   return (
     <h4>
@@ -720,6 +841,7 @@ export function VoiceControls({ voice }) {
       <div className="voice-controls-header">
         <span>editing <b>Voice {v.voiceNumber}</b></span>
         <ChainButton voice={v} onPickEffect={switchSub} />
+        <AutoButton voice={v} />
         <button
           onClick={v.randomize}
           title="randomize all effect parameters"

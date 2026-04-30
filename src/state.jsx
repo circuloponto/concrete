@@ -167,6 +167,12 @@ export const defaultVoice = () => ({
   effectGains: {},
   // modulation
   modulators: {},
+  // generative auto-modulation layer (independent of manual modulators).
+  autoActive: false,
+  autoMods: {},
+  autoPhaseScramble: 1,
+  autoRateJitter: 0.3,
+  autoStartDelay: 4,
 })
 export const MAX_VOICES = 6
 
