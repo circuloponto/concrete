@@ -186,26 +186,36 @@ export function applyAutoModulation(state, nodes, shifter, randomRef, skipKeys) 
   const now = performance.now() / 1000
   const mods = state.autoMods
   const rndMap = randomRef?.current
+  // 1-pole smoother per param so .value writes don't snap on every tick.
+  // alpha ≈ 0.18 with a 30 Hz tick → ~150 ms time constant. Prevents
+  // zipper noise + masks the small discontinuities from scramble re-rolls.
+  if (!randomRef.smoothed) randomRef.smoothed = new Map()
+  const smoothMap = randomRef.smoothed
+  const ALPHA = 0.18
   for (const key in mods) {
     if (skipKeys && skipKeys.has(key)) continue
-    // Manual modulator on the same param wins; skip auto for it.
     const manual = state.modulators?.[key]
-    if (manual?.enabled) continue
+    if (manual?.enabled) { smoothMap.delete(key); continue }
     const m = mods[key]
-    if (!m || !m.enabled) continue
+    if (!m || !m.enabled) { smoothMap.delete(key); continue }
     const spec = MOD_SPEC[key]
     if (!spec) continue
     const base = state[key]
     if (typeof base !== 'number') continue
     const r = rndMap?.get(key) || { phase: 0, rateMul: 1, startSec: 0, t0: now }
     const elapsed = now - r.t0
-    if (elapsed < r.startSec) continue   // still inside this mod's start delay
+    if (elapsed < r.startSec) { smoothMap.delete(key); continue }
     const effRate = (m.rate || 1) * (r.rateMul || 1)
     const lfo = lfoWave(m.wave || 'sine', effRate, now, r.phase || 0)
     const range = spec.max - spec.min
-    const value = base + lfo * (m.depth || 0) * (range / 2)
-    const clamped = Math.max(spec.min, Math.min(spec.max, value))
-    try { spec.apply(nodes, shifter, clamped) } catch {}
+    const target = base + lfo * (m.depth || 0) * (range / 2)
+    const clamped = Math.max(spec.min, Math.min(spec.max, target))
+    // First tick after activation: seed the smoother at base so the very
+    // first written value isn't a hard step from base to base+offset.
+    const prev = smoothMap.has(key) ? smoothMap.get(key) : base
+    const next = prev + (clamped - prev) * ALPHA
+    smoothMap.set(key, next)
+    try { spec.apply(nodes, shifter, next) } catch {}
   }
 }
 
@@ -226,4 +236,7 @@ export function rollAutoRandom(randomRef, autoMods, phaseScramble, rateJitter, m
     map.set(key, { phase, rateMul, startSec, t0 })
   }
   randomRef.current = map
+  // Don't clear randomRef.smoothed: we want the smoother to ease into the
+  // new phase/rate values rather than snap. The next tick will lerp from
+  // the existing smoothed value toward the new LFO output.
 }
